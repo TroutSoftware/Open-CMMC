@@ -221,10 +221,18 @@ preflight() {
     ok "ports $FB_LISTEN_PORT, $KC_BIND_PORT accounted for"
   fi
 
-  # Repo sanity: we need main.go + the config/ tree to build + install.
-  [ -f "$REPO_DIR/main.go" ] || fail "main.go not found under $REPO_DIR — run from a repo checkout"
-  [ -d "$REPO_DIR/config/systemd" ] || fail "config/systemd missing — run from a repo checkout"
-  ok "repo layout: $REPO_DIR"
+  # Repo sanity: in source mode we need main.go + the config/ tree to build + install.
+  # With --from-release, REPO_DIR gets redirected to the extracted tarball by
+  # phase_from_release (which runs after preflight) — that tree has config/ but
+  # no main.go, so skip the source-tree checks here and validate the tarball
+  # layout inside phase_from_release instead.
+  if [ -z "$FROM_RELEASE" ]; then
+    [ -f "$REPO_DIR/main.go" ] || fail "main.go not found under $REPO_DIR — run from a repo checkout"
+    [ -d "$REPO_DIR/config/systemd" ] || fail "config/systemd missing — run from a repo checkout"
+    ok "repo layout: $REPO_DIR"
+  else
+    ok "repo layout check deferred — --from-release provided"
+  fi
 }
 
 # --- system user + directories ---------------------------------------
