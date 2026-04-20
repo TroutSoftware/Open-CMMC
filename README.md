@@ -1,7 +1,5 @@
 # Open-CMMC
 
-[![CI](https://img.shields.io/github/actions/workflow/status/TroutSoftware/Open-CMMC/cmmc-supply-chain.yaml?branch=main&label=CI)](https://github.com/TroutSoftware/Open-CMMC/actions/workflows/cmmc-supply-chain.yaml)
-[![Release](https://img.shields.io/github/v/release/TroutSoftware/Open-CMMC?include_prereleases&sort=semver)](https://github.com/TroutSoftware/Open-CMMC/releases)
 [![License](https://img.shields.io/github/license/TroutSoftware/Open-CMMC)](./LICENSE)
 [![Security Policy](https://img.shields.io/badge/security%20policy-enabled-brightgreen)](./SECURITY.md)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](./go.mod)
