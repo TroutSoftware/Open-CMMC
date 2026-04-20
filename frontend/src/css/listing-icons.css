@@ -1,0 +1,253 @@
+/* Icons */
+
+/* General */
+
+.file-icons [aria-label^="."] {
+  opacity: 0.33;
+}
+.file-icons [data-ext=".bak"] {
+  opacity: 0.33;
+}
+
+.file-icons [data-type="audio"] i::before {
+  content: "volume_up";
+}
+.file-icons [data-type="blob"] i::before {
+  content: "insert_drive_file";
+}
+.file-icons [data-type="image"] i::before {
+  content: "image";
+}
+.file-icons [data-type="pdf"] i::before {
+  content: "description";
+}
+.file-icons [data-type="text"] i::before {
+  content: "description";
+}
+.file-icons [data-type="video"] i::before {
+  content: "movie";
+}
+.file-icons [data-type="invalid_link"] i::before {
+  content: "link_off";
+}
+
+/* #f90 - Image */
+
+.file-icons [data-ext=".ai"] i::before,
+.file-icons [data-ext=".odg"] i::before,
+.file-icons [data-ext=".xcf"] i::before {
+  content: "image";
+}
+
+/* #f90 - Presentation */
+
+.file-icons [data-ext=".odp"] i::before,
+.file-icons [data-ext=".ppt"] i::before,
+.file-icons [data-ext=".pptx"] i::before {
+  content: "slideshow";
+}
+
+/* #0f0 - Spreadsheet/Database */
+
+.file-icons [data-ext=".csv"] i::before,
+.file-icons [data-ext=".db"] i::before,
+.file-icons [data-ext=".odb"] i::before,
+.file-icons [data-ext=".ods"] i::before,
+.file-icons [data-ext=".xls"] i::before,
+.file-icons [data-ext=".xlsx"] i::before {
+  content: "border_all";
+}
+
+/* #00f - Document */
+
+.file-icons [data-ext=".doc"] i::before,
+.file-icons [data-ext=".docx"] i::before,
+.file-icons [data-ext=".log"] i::before,
+.file-icons [data-ext=".odt"] i::before,
+.file-icons [data-ext=".rtf"] i::before {
+  content: "description";
+}
+
+/* #999 - Code */
+
+.file-icons [data-ext=".c"] i::before,
+.file-icons [data-ext=".cpp"] i::before,
+.file-icons [data-ext=".cs"] i::before,
+.file-icons [data-ext=".css"] i::before,
+.file-icons [data-ext=".go"] i::before,
+.file-icons [data-ext=".h"] i::before,
+.file-icons [data-ext=".html"] i::before,
+.file-icons [data-ext=".java"] i::before,
+.file-icons [data-ext=".js"] i::before,
+.file-icons [data-ext=".json"] i::before,
+.file-icons [data-ext=".kt"] i::before,
+.file-icons [data-ext=".php"] i::before,
+.file-icons [data-ext=".py"] i::before,
+.file-icons [data-ext=".rb"] i::before,
+.file-icons [data-ext=".rs"] i::before,
+.file-icons [data-ext=".vue"] i::before,
+.file-icons [data-ext=".xml"] i::before,
+.file-icons [data-ext=".yml"] i::before {
+  content: "code";
+}
+
+/* #999 - Executable */
+
+.file-icons [data-ext=".apk"] i::before,
+.file-icons [data-ext=".bat"] i::before,
+.file-icons [data-ext=".exe"] i::before,
+.file-icons [data-ext=".jar"] i::before,
+.file-icons [data-ext=".ps1"] i::before,
+.file-icons [data-ext=".sh"] i::before {
+  content: "web_asset";
+}
+
+/* #999 - Installer */
+
+.file-icons [data-ext=".deb"] i::before,
+.file-icons [data-ext=".msi"] i::before,
+.file-icons [data-ext=".pkg"] i::before,
+.file-icons [data-ext=".rpm"] i::before {
+  content: "archive";
+}
+
+/* #999 - Compressed */
+
+.file-icons [data-ext=".7z"] i::before,
+.file-icons [data-ext=".bz2"] i::before,
+.file-icons [data-ext=".cab"] i::before,
+.file-icons [data-ext=".gz"] i::before,
+.file-icons [data-ext=".rar"] i::before,
+.file-icons [data-ext=".tar"] i::before,
+.file-icons [data-ext=".xz"] i::before,
+.file-icons [data-ext=".zip"] i::before,
+.file-icons [data-ext=".zst"] i::before {
+  content: "folder_zip";
+}
+
+/* #999 - Disk */
+
+.file-icons [data-ext=".ccd"] i::before,
+.file-icons [data-ext=".dmg"] i::before,
+.file-icons [data-ext=".iso"] i::before,
+.file-icons [data-ext=".mdf"] i::before,
+.file-icons [data-ext=".vdi"] i::before,
+.file-icons [data-ext=".vhd"] i::before,
+.file-icons [data-ext=".vmdk"] i::before,
+.file-icons [data-ext=".wim"] i::before {
+  content: "album";
+}
+
+/* #999 - Font */
+
+.file-icons [data-ext=".otf"] i::before,
+.file-icons [data-ext=".ttf"] i::before,
+.file-icons [data-ext=".woff"] i::before,
+.file-icons [data-ext=".woff2"] i::before {
+  content: "font_download";
+}
+
+/* Colors */
+
+/* General */
+
+.file-icons [data-type="audio"] i {
+  color: var(--icon-yellow);
+}
+.file-icons [data-type="image"] i {
+  color: var(--icon-orange);
+}
+.file-icons [data-type="video"] i {
+  color: var(--icon-violet);
+}
+.file-icons [data-type="invalid_link"] i {
+  color: var(--icon-red);
+}
+
+/* #f00 - Adobe/Oracle */
+
+.file-icons [data-ext=".ai"] i,
+.file-icons [data-ext=".java"] i,
+.file-icons [data-ext=".jar"] i,
+.file-icons [data-ext=".psd"] i,
+.file-icons [data-ext=".rb"] i,
+.file-icons [data-ext=".pdf"] i {
+  color: var(--icon-red);
+}
+
+/* #f90 - Image/Presentation */
+
+.file-icons [data-ext=".html"] i,
+.file-icons [data-ext=".odg"] i,
+.file-icons [data-ext=".odp"] i,
+.file-icons [data-ext=".ppt"] i,
+.file-icons [data-ext=".pptx"] i,
+.file-icons [data-ext=".vue"] i,
+.file-icons [data-ext=".xcf"] i {
+  color: var(--icon-orange);
+}
+
+/* #ff0 - Various */
+
+.file-icons [data-ext=".css"] i,
+.file-icons [data-ext=".js"] i,
+.file-icons [data-ext=".json"] i,
+.file-icons [data-ext=".zip"] i {
+  color: var(--icon-yellow);
+}
+
+/* #0f0 - Spreadsheet/Google */
+
+.file-icons [data-ext=".apk"] i,
+.file-icons [data-ext=".dex"] i,
+.file-icons [data-ext=".go"] i,
+.file-icons [data-ext=".ods"] i,
+.file-icons [data-ext=".xls"] i,
+.file-icons [data-ext=".xlsx"] i {
+  color: var(--icon-green);
+}
+
+/* #00f - Document/Microsoft/Apple/Closed */
+
+.file-icons [data-ext=".aac"] i,
+.file-icons [data-ext=".bat"] i,
+.file-icons [data-ext=".cab"] i,
+.file-icons [data-ext=".cs"] i,
+.file-icons [data-ext=".dmg"] i,
+.file-icons [data-ext=".doc"] i,
+.file-icons [data-ext=".docx"] i,
+.file-icons [data-ext=".emf"] i,
+.file-icons [data-ext=".exe"] i,
+.file-icons [data-ext=".ico"] i,
+.file-icons [data-ext=".mp2"] i,
+.file-icons [data-ext=".mp3"] i,
+.file-icons [data-ext=".mp4"] i,
+.file-icons [data-ext=".mpg"] i,
+.file-icons [data-ext=".msi"] i,
+.file-icons [data-ext=".odt"] i,
+.file-icons [data-ext=".ps1"] i,
+.file-icons [data-ext=".rtf"] i,
+.file-icons [data-ext=".vob"] i,
+.file-icons [data-ext=".wim"] i {
+  color: var(--icon-blue);
+}
+
+/* #60f - Various */
+
+.file-icons [data-ext=".iso"] i,
+.file-icons [data-ext=".php"] i,
+.file-icons [data-ext=".rar"] i {
+  color: var(--icon-violet);
+}
+
+/* Overrides */
+
+.file-icons [data-dir="true"] i {
+  color: var(--icon-blue);
+}
+.file-icons [data-dir="true"] i::before {
+  content: "folder";
+}
+.file-icons [aria-selected="true"] i {
+  color: var(--iconSecondary);
+}

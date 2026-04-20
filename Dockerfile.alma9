@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+#
+# CMMC-Filebrowser — AlmaLinux 9 FIPS build.
+#
+# Parallel of Dockerfile.rhel-ubi for operators who prefer the AlmaLinux
+# 9 free binary-compatible rebuild over UBI 9. AlmaLinux mirrors RHEL's
+# go-toolset package, so the resulting Go toolchain links against the
+# same FIPS 140-3 validated OpenSSL and produces an identical binary
+# posture to the UBI build. The validated module's cert applies to the
+# OpenSSL library, not the Linux distribution that ships it — so either
+# RHEL or AlmaLinux gets you the inheritance.
+#
+# Use cases:
+#   - Sites that can't take a RHEL subscription (budget / procurement).
+#   - CI environments that already standardize on AlmaLinux.
+#   - Dev boxes where ubi9 images' pull rate-limit is a pain.
+#
+# Build:
+#   podman build -f Dockerfile.alma9 -t cmmc-filebrowser:cmmc-v2.63.2-001-alma9 .
+#
+# Run (on an AlmaLinux 9 host in FIPS mode — `fips-mode-setup --enable`):
+#   podman run --rm -p 8080:8080 \
+#     -v /srv/cmmc-filebrowser:/srv \
+#     --env-file /etc/cmmc-filebrowser/environment \
+#     cmmc-filebrowser:cmmc-v2.63.2-001-alma9
+
+# --- Stage 1: build --------------------------------------------------------
+FROM quay.io/almalinuxorg/almalinux:9 AS build
+
+USER 0
+WORKDIR /src
+
+# go-toolset is the RHEL/alma package that gives us a go that cgo-links
+# against the system OpenSSL (FIPS-validated on a fips-mode host).
+# openssl-devel is required for the cgo link. tar/gzip/git are the
+# usual build helpers for any source tree.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        go-toolset \
+        openssl-devel \
+        tar gzip git \
+    && dnf clean all
+
+# Dependency caching layer.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Same FIPS knobs as Dockerfile.rhel-ubi — the validated module is
+# baked into the binary, platform OpenSSL is the cgo crypto provider.
+ARG CMMC_RELEASE="cmmc-v2.63.2-001"
+ENV GOFIPS140=v1.0.0 \
+    CGO_ENABLED=1 \
+    GOFLAGS="-trimpath -buildvcs=false"
+
+RUN go build \
+    -tags="netgo" \
+    -ldflags "-s -w -X github.com/filebrowser/filebrowser/v2/version.Version=${CMMC_RELEASE}" \
+    -o /out/filebrowser \
+    .
+
+# --- Stage 2: runtime ------------------------------------------------------
+FROM quay.io/almalinuxorg/almalinux:9-minimal AS runtime
+
+ENV GODEBUG=fips140=on
+
+RUN microdnf install -y ca-certificates tzdata \
+    && microdnf clean all \
+    && groupadd --system --gid 10001 filebrowser \
+    && useradd  --system --uid 10001 --gid 10001 --home-dir /srv --shell /sbin/nologin filebrowser \
+    && mkdir -p /srv /etc/cmmc-filebrowser \
+    && chown -R filebrowser:filebrowser /srv /etc/cmmc-filebrowser
+
+COPY --from=build /out/filebrowser /usr/local/bin/filebrowser
+COPY --chown=filebrowser:filebrowser branding /opt/cmmc-filebrowser/branding
+
+USER filebrowser
+WORKDIR /srv
+
+EXPOSE 8080
+VOLUME ["/srv", "/etc/cmmc-filebrowser"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD /usr/local/bin/filebrowser version >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/usr/local/bin/filebrowser"]
+CMD ["--address", "0.0.0.0", "--port", "8080", "--database", "/srv/filebrowser.db", "--root", "/srv/files"]

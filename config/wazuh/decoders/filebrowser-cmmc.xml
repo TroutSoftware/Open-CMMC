@@ -1,0 +1,39 @@
+<!--
+  Wazuh decoders for CMMC-filebrowser audit events.
+
+  filebrowser-cmmc emits one JSON object per line (see
+  cmmc/audit/emitter.go — NewJSONEmitter writes to stdout, which
+  systemd journald captures under the unit cmmc-filebrowser.service,
+  which the Wazuh agent reads via a <localfile type="journald">
+  block).
+
+  Event shape (abbreviated — full contract in cmmc/audit/event.go):
+    {
+      "ts": "2026-04-18T15:56:14.123Z",
+      "event_id": "...",
+      "correlation_id": "...",
+      "user_id": "...",
+      "username": "alice",
+      "client_ip": "192.0.2.1",
+      "user_agent": "...",
+      "action": "cui.scan.reject",
+      "resource": "/Engineering_CUI/spec.pdf",
+      "outcome": "reject",
+      "status": 422,
+      "latency_ms": 12,
+      "reason": "malicious-code detected [signature=Eicar-Test]",
+      "prev_mac": "...",
+      "mac": "..."
+    }
+
+  Install to /var/ossec/etc/decoders/ on the Wazuh manager. The
+  plugin_decoder="JSON_Decoder" below tells Wazuh to auto-extract
+  every JSON key into the alert fields dictionary, then the prematch
+  narrows by the presence of our {"action":"..."} signature so we
+  don't collide with other journald JSON sources.
+-->
+
+<decoder name="filebrowser-cmmc">
+    <prematch>"action"\s*:\s*"(auth|authz|user|share|settings|file|admin|cui|session|audit)\.</prematch>
+    <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>

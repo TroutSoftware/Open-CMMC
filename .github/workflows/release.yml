@@ -1,0 +1,192 @@
+# Release — Open-CMMC
+#
+# WHAT it does: runs scripts/build-release.sh inside a RHEL UBI 9
+# container (go-toolset built in — same FIPS path as RHEL 9 / Alma 9
+# targets), produces cmmc-filebrowser-<ver>-linux-<arch>.tar.gz,
+# validates SHA256SUMS, and attaches the tarball + checksum to a
+# GitHub Release.
+#
+# WHEN it runs: deliberately narrow. Two entry points, nothing else:
+#
+#   1. Tag matches vMAJOR.0.0 exactly — the "we cut a major" trigger.
+#      v1.0.0 → runs. v1.0.1 / v1.1.0 / v2.5.3 → NOT a major, no
+#      build. Patch + minor releases stay off CI until the operator
+#      explicitly triggers a manual dispatch or creates a new
+#      MAJOR.0.0 tag.
+#
+#   2. workflow_dispatch — explicit manual invocation from the Actions
+#      UI or `gh workflow run`. Used for release candidates, security
+#      rebuilds, or back-filling a missed tag. Version is passed via
+#      the `version_override` input so the artifact name is stable.
+#
+# WHY not every tag: CMMC-regulated products benefit from an
+# intentional release cadence — every artifact gets a compliance
+# stamp, so CI shouldn't blast builds on every commit or minor tag.
+# Major releases are the right granularity; minor/patch can be
+# built on demand via scripts/build-release.sh locally, scp'd to
+# the target, and installed via install.sh --from-release.
+#
+# HOW to trigger:
+#
+#   # Cut a major release (automatic)
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+#   # Manual (e.g. release candidate)
+#   gh workflow run release.yml -f version_override=v1.0.0-rc1
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.0.0'   # v1.0.0, v2.0.0 — MAJOR versions only
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Explicit version (e.g. v1.0.0-rc1). Leave blank to use git describe.'
+        required: false
+        type: string
+
+permissions:
+  contents: write  # needed to create/update a GitHub Release
+
+jobs:
+  build:
+    name: Build + publish release tarball
+    runs-on: ubuntu-latest
+
+    # UBI 9 go-toolset = same base as the RHEL 9 and AlmaLinux 9
+    # deployment targets. The FIPS-validated crypto path is inherited
+    # identically (CMVP #4774 OpenSSL module at runtime). Building on
+    # a Debian-based runner would work but would diverge the binary
+    # from the deployment posture — not worth the 2-minute saved.
+    container:
+      image: registry.access.redhat.com/ubi9/go-toolset:latest
+      options: --user 0:0  # dnf needs root; UBI default user is 1001
+
+    steps:
+      - name: Checkout (full history for git describe)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          # nodejs module pins to >=18.12 which pnpm v10 requires.
+          # tar + gzip are in the UBI base; jq + git too. We just
+          # add nodejs + npm.
+          dnf install -y --allowerasing nodejs npm tar gzip git jq
+          npm install -g pnpm --silent
+          printf "\n=== Toolchain versions ===\n"
+          go version
+          node --version
+          pnpm --version
+          git --version
+
+      - name: Determine release version
+        id: version
+        run: |
+          # Priority:
+          #   1. Manual workflow_dispatch input (RCs, rebuilds)
+          #   2. Tag that fired this workflow (the vMAJOR.0.0 path)
+          #   3. Fallback: fail — we never want an ambiguous release.
+          OVERRIDE='${{ inputs.version_override }}'
+          TAGREF='${{ github.ref_name }}'
+          if [ -n "$OVERRIDE" ]; then
+            VERSION="$OVERRIDE"
+          elif [ -n "$TAGREF" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="$TAGREF"
+          else
+            echo "::error::no tag and no version_override — refusing to release"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved VERSION=$VERSION"
+
+      - name: Build release tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Mark the working tree safe — UBI's root vs checkout-user
+          # combo otherwise produces "dubious ownership" from git.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          bash scripts/build-release.sh
+
+      - name: Compute tarball metadata
+        id: tarball
+        run: |
+          TAR=$(ls dist/cmmc-filebrowser-*-linux-*.tar.gz | head -1)
+          [ -s "$TAR" ] || { echo "::error::tarball missing"; exit 1; }
+          SHA=$(sha256sum "$TAR" | awk '{print $1}')
+          SIZE=$(stat -c '%s' "$TAR")
+          echo "TAR=$TAR" >> "$GITHUB_ENV"
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+          echo "tar=$TAR"   >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA"   >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          printf 'Tarball: %s\nSHA256:  %s\nSize:    %s bytes\n' "$TAR" "$SHA" "$SIZE"
+
+      # Even on manual dispatch we save the artifact so operators can
+      # pull it without creating a Release (RC testing workflow).
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmmc-filebrowser-${{ steps.version.outputs.version }}
+          path: |
+            ${{ env.TAR }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write SHA256SUM side-file
+        run: |
+          # GitHub Releases doesn't expose the checksum field separately;
+          # shipping a companion .sha256 file is the portable pattern
+          # customers use to verify the tarball post-download.
+          echo "${SHA}  $(basename "$TAR")" > "${TAR}.sha256"
+
+      # Release-creation is gated on a real tag push. workflow_dispatch
+      # runs produce a workflow artifact only — intentional, so manual
+      # RC builds don't clutter the public Releases tab.
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Open-CMMC ${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ env.TAR }}
+            ${{ env.TAR }}.sha256
+          generate_release_notes: true
+          body: |
+            ## Open-CMMC ${{ steps.version.outputs.version }}
+
+            Deployable on any RHEL 9 / AlmaLinux 9 / Rocky 9 host with
+            `podman + systemd + FIPS mode` (or `SKIP_FIPS_CHECK=1` for dev).
+
+            ### Artifact
+
+            | Field | Value |
+            |---|---|
+            | File | `cmmc-filebrowser-${{ steps.version.outputs.version }}-linux-amd64.tar.gz` |
+            | Size | ${{ steps.tarball.outputs.size }} bytes |
+            | SHA256 | `${{ steps.tarball.outputs.sha }}` |
+
+            ### Install
+
+            ```bash
+            TAR=cmmc-filebrowser-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+
+            # Download + verify
+            curl -L -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$TAR
+            curl -L -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$TAR.sha256
+            sha256sum --check $TAR.sha256
+
+            # Extract and deploy (no node/go/pnpm needed on target)
+            tar -xzf $TAR
+            sudo ./config/install.sh deploy --from-release "$(realpath $TAR)"
+            ```
+
+            See `docs/operator-2fa.md` for 2FA enrollment (TOTP + FIDO2) and
+            `docs/compliance-posture.md` for per-control NIST 800-171 Rev 2 coverage.

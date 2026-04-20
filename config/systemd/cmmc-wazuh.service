@@ -1,0 +1,59 @@
+# Bundled Wazuh (manager + indexer + dashboard) for CMMC-Filebrowser.
+#
+# Opt-in — only installed when `install.sh deploy --with-wazuh` runs.
+# Customers federating to an existing SIEM skip this entirely; their
+# setup is the "agent-only" shape from wazuh-integration.md §(a).
+#
+# Why compose-wrapper and not per-container quadlets: the three
+# containers form an interdependent stack (manager waits on indexer,
+# dashboard on manager). Teaching systemd that ordering with three
+# units + three After=/Wants= lines is possible but duplicates the
+# graph podman-compose already encodes. Compose wins here.
+#
+# Install:
+#   sudo install -m 0644 cmmc-wazuh.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cmmc-wazuh
+#
+# First-boot prerequisite: the env file must define
+# INDEXER_PASSWORD and DASHBOARD_PASSWORD (installer generates these
+# into /etc/cmmc-filebrowser/environment). The compose file refuses
+# to boot on the "CHANGE_ME_BEFORE_BOOT" placeholder values so a
+# forgotten deployment fails loud.
+
+[Unit]
+Description=CMMC Wazuh bundle (manager + indexer + dashboard)
+Documentation=https://documentation.wazuh.com/
+Documentation=file:///usr/share/doc/cmmc-filebrowser/wazuh-integration.md
+After=network-online.target
+Wants=network-online.target
+# Start after filebrowser so the audit stream is already flowing by
+# the time the manager comes online — avoids a "first minute of
+# events missing" gotcha in the SIEM timeline.
+After=cmmc-filebrowser.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+
+# Compose file ships in the repo; installer copies it to /etc.
+# Keeping the source of truth under /etc lets operators tune
+# resource caps + image digests without touching the installer.
+Environment=WAZUH_COMPOSE=/etc/cmmc-filebrowser/wazuh/podman-compose.wazuh.yml
+EnvironmentFile=-/etc/cmmc-filebrowser/environment
+
+# Use `podman compose` (bundled with podman 4.4+) rather than the
+# python `podman-compose` so we don't add a pip dependency to the
+# host. Falls back to the standalone binary via PATH if present.
+ExecStart=/usr/bin/podman compose -f ${WAZUH_COMPOSE} up -d
+ExecStop=/usr/bin/podman compose -f ${WAZUH_COMPOSE} down
+
+TimeoutStartSec=300s
+TimeoutStopSec=60s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cmmc-wazuh
+
+[Install]
+WantedBy=multi-user.target

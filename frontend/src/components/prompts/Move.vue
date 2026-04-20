@@ -1,0 +1,179 @@
+<template>
+  <div class="card floating">
+    <div class="card-title">
+      <h2>{{ $t("prompts.move") }}</h2>
+    </div>
+
+    <div class="card-content">
+      <p>{{ $t("prompts.moveMessage") }}</p>
+      <file-list
+        ref="fileList"
+        @update:selected="(val) => (dest = val)"
+        :exclude="excludedFolders"
+        tabindex="1"
+      />
+    </div>
+
+    <div
+      class="card-action"
+      style="display: flex; align-items: center; justify-content: space-between"
+    >
+      <template v-if="user.perm.create">
+        <button
+          class="button button--flat"
+          @click="$refs.fileList.createDir()"
+          :aria-label="$t('sidebar.newFolder')"
+          :title="$t('sidebar.newFolder')"
+          style="justify-self: left"
+        >
+          <span>{{ $t("sidebar.newFolder") }}</span>
+        </button>
+      </template>
+      <div>
+        <button
+          class="button button--flat button--grey"
+          @click="closeHovers"
+          :aria-label="$t('buttons.cancel')"
+          :title="$t('buttons.cancel')"
+          tabindex="3"
+        >
+          {{ $t("buttons.cancel") }}
+        </button>
+        <button
+          id="focus-prompt"
+          class="button button--flat"
+          @click="move"
+          :disabled="$route.path === dest"
+          :aria-label="$t('buttons.move')"
+          :title="$t('buttons.move')"
+          tabindex="2"
+        >
+          {{ $t("buttons.move") }}
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import { mapActions, mapState, mapWritableState } from "pinia";
+import { useFileStore } from "@/stores/file";
+import { useLayoutStore } from "@/stores/layout";
+import { useAuthStore } from "@/stores/auth";
+import FileList from "./FileList.vue";
+import { files as api } from "@/api";
+import buttons from "@/utils/buttons";
+import * as upload from "@/utils/upload";
+import { removePrefix } from "@/api/utils";
+
+export default {
+  name: "move",
+  components: { FileList },
+  data: function () {
+    return {
+      current: window.location.pathname,
+      dest: null,
+    };
+  },
+  inject: ["$showError"],
+  computed: {
+    ...mapState(useFileStore, ["req", "selected"]),
+    ...mapState(useAuthStore, ["user"]),
+    ...mapWritableState(useFileStore, ["reload", "preselect"]),
+    excludedFolders() {
+      return this.selected
+        .filter((idx) => this.req.items[idx].isDir)
+        .map((idx) => this.req.items[idx].url);
+    },
+  },
+  methods: {
+    ...mapActions(useLayoutStore, ["showHover", "closeHovers"]),
+    move: async function (event) {
+      event.preventDefault();
+      const items = [];
+
+      for (const item of this.selected) {
+        items.push({
+          from: this.req.items[item].url,
+          to: this.dest + encodeURIComponent(this.req.items[item].name),
+          name: this.req.items[item].name,
+          size: this.req.items[item].size,
+          modified: this.req.items[item].modified,
+          overwrite: false,
+          rename: false,
+        });
+      }
+
+      const action = async (overwrite, rename) => {
+        buttons.loading("move");
+
+        await api
+          .move(items, overwrite, rename)
+          .then(() => {
+            buttons.success("move");
+            this.preselect = removePrefix(items[0].to);
+            if (this.user.redirectAfterCopyMove)
+              this.$router.push({ path: this.dest });
+            else this.reload = true;
+          })
+          .catch((e) => {
+            buttons.done("move");
+            // CMMC 3.8.3 / 3.1.3 — containment block. Backend tags
+            // the response with "cui-containment:" prefix and the
+            // X-CMMC-Block header. Surface a dedicated, actionable
+            // toast so the admin knows the rule, not a raw 403.
+            const msg = (e && e.message) || "";
+            if (typeof msg === "string" && msg.includes("cui-containment")) {
+              const err = new Error(
+                "Move blocked: a CUI-marked item cannot be moved to an " +
+                  "uncontrolled destination. Choose a CUI-classified " +
+                  "folder, or declassify the destination first."
+              );
+              err.status = 403;
+              this.$showError(err);
+              return;
+            }
+            this.$showError(e);
+          });
+      };
+
+      const dstItems = (await api.fetch(this.dest)).items;
+      const conflict = upload.checkConflict(items, dstItems);
+
+      if (conflict.length > 0) {
+        this.showHover({
+          prompt: "resolve-conflict",
+          props: {
+            conflict: conflict,
+            files: items,
+          },
+          confirm: (event, result) => {
+            event.preventDefault();
+            this.closeHovers();
+            for (let i = result.length - 1; i >= 0; i--) {
+              const item = result[i];
+              if (item.checked.length == 2) {
+                items[item.index].rename = true;
+              } else if (
+                item.checked.length == 1 &&
+                item.checked[0] == "origin"
+              ) {
+                items[item.index].overwrite = true;
+              } else {
+                items.splice(item.index, 1);
+              }
+            }
+            if (items.length > 0) {
+              action();
+            }
+          },
+        });
+
+        return;
+      }
+
+      action(false, false);
+    },
+  },
+};
+</script>

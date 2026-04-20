@@ -1,0 +1,134 @@
+package users
+
+import (
+	"path/filepath"
+
+	"github.com/spf13/afero"
+
+	fberrors "github.com/filebrowser/filebrowser/v2/errors"
+	"github.com/filebrowser/filebrowser/v2/files"
+	"github.com/filebrowser/filebrowser/v2/rules"
+)
+
+// ViewMode describes a view mode.
+type ViewMode string
+
+const (
+	ListViewMode   ViewMode = "list"
+	MosaicViewMode ViewMode = "mosaic"
+)
+
+// User describes a user.
+type User struct {
+	ID                    uint          `storm:"id,increment" json:"id"`
+	Username              string        `storm:"unique" json:"username"`
+	Password              string        `json:"password"`
+	Scope                 string        `json:"scope"`
+	Locale                string        `json:"locale"`
+	LockPassword          bool          `json:"lockPassword"`
+	ViewMode              ViewMode      `json:"viewMode"`
+	SingleClick           bool          `json:"singleClick"`
+	RedirectAfterCopyMove bool          `json:"redirectAfterCopyMove"`
+	Perm                  Permissions   `json:"perm"`
+	Commands              []string      `json:"commands"`
+	Sorting               files.Sorting `json:"sorting"`
+	Fs                    afero.Fs      `json:"-" yaml:"-"`
+	Rules                 []rules.Rule  `json:"rules"`
+	HideDotfiles          bool          `json:"hideDotfiles"`
+	DateFormat            bool          `json:"dateFormat"`
+	AceEditorTheme        string        `json:"aceEditorTheme"`
+
+	// CMMC — profile fields sourced from the OIDC id_token at each
+	// login so the SPA can render a "my page" without extra IdP
+	// calls. Populated by the OIDC provisioning path; empty for
+	// legacy json-auth users. Email is also the display identifier
+	// on audit records when Username happens to be a subject-hash.
+	Email    string   `json:"email,omitempty"`
+	FullName string   `json:"fullName,omitempty"`
+	Groups   []string `json:"groups,omitempty"`
+}
+
+// GetRules implements rules.Provider.
+func (u *User) GetRules() []rules.Rule {
+	return u.Rules
+}
+
+var checkableFields = []string{
+	"Username",
+	"Password",
+	"Scope",
+	"ViewMode",
+	"Commands",
+	"Sorting",
+	"Rules",
+}
+
+// Clean cleans up a user and verifies if all its fields
+// are alright to be saved.
+func (u *User) Clean(baseScope string, fields ...string) error {
+	if len(fields) == 0 {
+		fields = checkableFields
+	}
+
+	for _, field := range fields {
+		switch field {
+		case "Username":
+			if u.Username == "" {
+				return fberrors.ErrEmptyUsername
+			}
+		case "Password":
+			if u.Password == "" {
+				return fberrors.ErrEmptyPassword
+			}
+		case "ViewMode":
+			if u.ViewMode == "" {
+				u.ViewMode = ListViewMode
+			}
+		case "Commands":
+			if u.Commands == nil {
+				u.Commands = []string{}
+			}
+		case "Sorting":
+			if u.Sorting.By == "" {
+				u.Sorting.By = "name"
+			}
+		case "Rules":
+			if u.Rules == nil {
+				u.Rules = []rules.Rule{}
+			}
+		}
+	}
+
+	if u.Fs == nil {
+		scope := u.Scope
+		scope = filepath.Join(baseScope, filepath.Join("/", scope))
+		u.Fs = UserFsBuilder(scope)
+	}
+
+	return nil
+}
+
+// UserFsBuilder constructs the afero.Fs rooted at a user's scope.
+// Default: a plain BasePathFs over OsFs — what upstream shipped.
+//
+// CMMC builds swap this at boot (from cmd/root.go) to interpose an
+// EncryptingFS between BasePathFs and OsFs, so every read/write of
+// a user's files goes through per-file envelope encryption without
+// having to change any handler. FullPath still type-asserts on
+// *afero.BasePathFs, which is the OUTERMOST layer — unchanged.
+//
+// Swapping the builder MUST happen before any user is loaded;
+// callers that swap it late will see mixed-mode users (some with
+// the old Fs, some with the new). cmd/root.go does it at the
+// earliest possible point: right after KEK load, before the HTTP
+// server starts.
+var UserFsBuilder func(scope string) afero.Fs = defaultUserFsBuilder
+
+func defaultUserFsBuilder(scope string) afero.Fs {
+	return afero.NewBasePathFs(afero.NewOsFs(), scope)
+}
+
+// FullPath gets the full path for a user's relative path.
+func (u *User) FullPath(path string) string {
+	return afero.FullBaseFsPath(u.Fs.(*afero.BasePathFs), path)
+}

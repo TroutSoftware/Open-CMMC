@@ -1,0 +1,107 @@
+*.db
+*.bak
+_old
+rice-box.go
+.idea/
+/filebrowser
+/filebrowser.exe
+/dist
+.venv
+
+.DS_Store
+node_modules
+
+# local env files
+.env.local
+.env.*.local
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw*
+bin/
+build/
+
+# Vue distributable files
+/frontend/dist/*
+!/frontend/dist/.gitkeep
+
+default.nix
+Dockerfile.dev
+
+# --- CMMC fork additions ---------------------------------------------------
+#
+# Keep personal info, deployment-specific values, and credentials OUT of
+# the committed tree. Operators stage these in their own configuration
+# management tool (Ansible / Terraform / Vault), not here.
+
+# Build artifacts from the FIPS toolchain
+/filebrowser-fips
+/filebrowser-nofips
+/filebrowser-*
+
+# Environment / secrets — anything that might carry OIDC client secrets,
+# Keycloak admin passwords, SMTP auth, TPM/HSM PINs, or chain-key
+# overrides. The canonical `.env.local` / `.env.*.local` above covers
+# frontend; these cover the backend + ops layer.
+/.env
+/.env.*
+*.env
+environment
+environment.*
+/config/**/49-cmmc-vars.conf
+/config/**/*-vars.conf
+/config/**/*.local.*
+
+# Tokens / session-JWT dumps produced by dev helpers (mint.go etc.)
+*.tok
+/admin.tok
+/user.tok
+
+# PKI / key material. Production keys MUST live under /etc/pki/cmmc on
+# the host, never in the repo.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+/pki/
+/certs/
+
+# Coverage / profiler output
+coverage.out
+coverage.html
+*.cover
+/pprof/
+/profiles/
+
+# Local audit-stream samples — they contain real user activity and
+# CUI-adjacent metadata.
+/audit-samples/
+*.jsonl.local
+/var/log/cmmc-filebrowser-mirror.*
+
+# Operator logs / snapshots
+fb-fips.log
+fb-*.log
+
+# Site-local systemd drop-ins overriding defaults with real paths /
+# credentials. Commit the canonical unit; operator adds .d/ overrides.
+/config/systemd/*.local.service
+/config/systemd/*.d/
+
+# Dev scratch — ad-hoc test scripts, temp Go programs, local DB copies
+/scratch/
+/mint.go
+/fipscheck.go
+filebrowser.db*
+/tmp-*

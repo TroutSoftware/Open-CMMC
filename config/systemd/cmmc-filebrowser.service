@@ -1,0 +1,112 @@
+# CMMC-Filebrowser systemd unit.
+#
+# Runs filebrowser-fips as an unprivileged service and pipes stdout
+# (the structured JSON audit stream) to journald with a stable
+# SyslogIdentifier so rsyslog can pick it up cleanly. Hardened per
+# systemd's sandbox directives so a compromise of the process cannot
+# escalate to the host.
+#
+# Install:
+#   sudo install -m 0644 cmmc-filebrowser.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cmmc-filebrowser
+
+[Unit]
+Description=CMMC-Filebrowser (FIPS build)
+Documentation=https://github.com/filebrowser/filebrowser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cmmc-filebrowser
+Group=cmmc-filebrowser
+# TLS terminated in-process (decision D4 — "Filebrowser terminates
+# TLS directly — no reverse proxy"). Cert files are managed by
+# install.sh's phase_tls; either self-signed dev or customer-
+# supplied Access Gate / enterprise CA cert. Group cmmc-filebrowser
+# reads the key (chmod 0640 root:cmmc-filebrowser).
+ExecStart=/usr/local/bin/cmmc-filebrowser \
+  --address 0.0.0.0 \
+  --port 8443 \
+  --cert /etc/cmmc-filebrowser/tls/server.crt \
+  --key /etc/cmmc-filebrowser/tls/server.key \
+  --database /var/lib/cmmc-filebrowser/filebrowser.db \
+  --root /srv/cmmc-filebrowser/files
+
+# Production FIPS posture. GOFIPS140=v1.0.0 also baked in at build,
+# but setting GODEBUG here makes the runtime posture visible in the
+# process environment for assessors inspecting /proc/<pid>/environ.
+Environment=GODEBUG=fips140=on
+
+# Optional: pull OIDC / forwarder env values out of band.
+EnvironmentFile=-/etc/cmmc-filebrowser/environment
+
+# Resilience.
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+
+# CMMC 3.3.1 / 3.3.2: stream stdout (audit JSON) to journald with a
+# stable identifier. The rsyslog drop-in selects on $programname ==
+# "cmmc-filebrowser" — if you rename SyslogIdentifier, update the
+# rsyslog config in lockstep.
+SyslogIdentifier=cmmc-filebrowser
+StandardOutput=journal
+StandardError=journal
+
+# --- sandbox / hardening ---
+# Matches systemd-analyze security recommendations for a network
+# daemon handling CUI. Each of these reduces the blast radius if the
+# process is compromised.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+# AF_NETLINK is required by Go's stdlib DNS resolver on Linux when it
+# is configured to use the kernel's getaddrinfo-equivalent (default
+# resolver mode). Removing it surfaces as intermittent DNS timeouts
+# on IdP / SIEM endpoints.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# filebrowser only needs write access to its DB and the file-tree
+# under server.Root. Everything else is read-only. /etc/cmmc-
+# filebrowser/tls is NOT in ReadWritePaths — the service only reads
+# its own cert/key; rotating the cert is operator-initiated outside
+# the running process.
+ReadWritePaths=/var/lib/cmmc-filebrowser /srv/cmmc-filebrowser
+StateDirectory=cmmc-filebrowser
+StateDirectoryMode=0750
+
+# Files created by the service must not be world-readable — filebrowser
+# writes CUI file bytes and audit-adjacent state into these paths.
+UMask=0027
+
+# Resource caps. Defaults are generous for a file-server serving up to
+# ~100 concurrent sessions with TUS-resumable uploads; scale up for
+# larger deployments. LimitNOFILE set explicitly because systemd's
+# default 1024 is too tight for concurrent TUS uploads + watch-file
+# handles.
+LimitNOFILE=65536
+TasksMax=4096
+
+[Install]
+WantedBy=multi-user.target

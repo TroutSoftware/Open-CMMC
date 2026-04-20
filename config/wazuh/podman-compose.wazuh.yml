@@ -1,0 +1,119 @@
+# Bundled Wazuh manager + indexer + dashboard.
+#
+# Opt-in deployment: the appliance does NOT require Wazuh. Customers
+# with their own Wazuh install point the agent at their manager and
+# skip this file. Customers who want the turn-key bundle bring up the
+# stack alongside filebrowser.
+#
+# Activate:
+#     podman-compose \
+#         -f compose.yaml \
+#         -f config/wazuh/podman-compose.wazuh.yml \
+#         up -d
+#
+# Deactivate (keeps filebrowser running):
+#     podman-compose -f config/wazuh/podman-compose.wazuh.yml down
+#
+# Storage:
+#   - wazuh_manager_data: /var/ossec state + event queue
+#   - wazuh_indexer_data: OpenSearch index
+#   - wazuh_dashboard_data: OpenSearch Dashboards state
+#
+# Sizing:
+#   - Manager: 2 vCPU, 2 GiB RAM — handles a single cabinet's load
+#     with room for FIM + rootcheck.
+#   - Indexer: 2 vCPU, 4 GiB RAM (OpenSearch is hungry).
+#   - Dashboard: 1 vCPU, 1 GiB RAM.
+#
+# TLS: certs generated on first-run into wazuh_manager_data. Replace
+# with customer-issued certs before promoting to production — the
+# Wazuh docs' `generate-indexer-certs.yml` run-once flow applies.
+#
+# Images pinned by digest would be safer; using explicit version
+# tags here for legibility. An operator hardening this deployment
+# should pin and add a cosign signature check to the supply chain.
+
+version: "3.9"
+
+services:
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.9.0
+    hostname: wazuh-manager
+    restart: unless-stopped
+    ports:
+      - "1514:1514/tcp"   # agents → manager (TLS)
+      - "1515:1515/tcp"   # agent enrollment
+      - "55000:55000/tcp" # REST API (localhost-bound recommended)
+    environment:
+      # API credentials — change before first boot. The default is
+      # deliberately unworkable so an operator who forgets to set
+      # them gets a loud failure, not a public service.
+      - INDEXER_URL=https://wazuh-indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=CHANGE_ME_BEFORE_BOOT
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+    volumes:
+      - wazuh_manager_data:/var/ossec
+      # Mount the CMMC decoder + rules into the manager's etc dir so
+      # they load on first boot. The manager auto-includes any
+      # .xml file under these paths.
+      - ./decoders/filebrowser-cmmc.xml:/var/ossec/etc/decoders/filebrowser-cmmc.xml:ro
+      - ./rules/filebrowser-cmmc.xml:/var/ossec/etc/rules/filebrowser-cmmc.xml:ro
+    networks:
+      - wazuh-net
+    healthcheck:
+      test: ["CMD", "/var/ossec/bin/wazuh-control", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  wazuh-indexer:
+    image: wazuh/wazuh-indexer:4.9.0
+    hostname: wazuh-indexer
+    restart: unless-stopped
+    environment:
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+      - cluster.initial_master_nodes=wazuh-indexer
+      - cluster.name=cmmc-cluster
+      - node.name=wazuh-indexer
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - wazuh_indexer_data:/var/lib/wazuh-indexer
+    networks:
+      - wazuh-net
+
+  wazuh-dashboard:
+    image: wazuh/wazuh-dashboard:4.9.0
+    hostname: wazuh-dashboard
+    restart: unless-stopped
+    # 5601 is the Wazuh/OpenSearch Dashboards default port. Do NOT
+    # map to 443 on the same host as filebrowser — they'd fight for
+    # the TLS port. Put the dashboard behind the customer's own
+    # reverse proxy / Trout Access Gate terminator if you want it
+    # on 443 with a hostname split.
+    ports:
+      - "5601:5601"
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=CHANGE_ME_BEFORE_BOOT
+      - WAZUH_API_URL=https://wazuh-manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=CHANGE_ME_BEFORE_BOOT
+    depends_on:
+      - wazuh-indexer
+      - wazuh-manager
+    networks:
+      - wazuh-net
+
+volumes:
+  wazuh_manager_data:
+  wazuh_indexer_data:
+  wazuh_dashboard_data:
+
+networks:
+  wazuh-net:
+    driver: bridge

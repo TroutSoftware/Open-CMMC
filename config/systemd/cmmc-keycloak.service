@@ -1,0 +1,116 @@
+# Keycloak (OIDC IdP) for CMMC-Filebrowser, managed via podman.
+#
+# Runs the upstream keycloak container in dev-ish mode with a
+# persistent named volume so realm state survives reboots. This is
+# the "single-host bundled IdP" path from decision D11 — customers
+# federating to Entra GCC-H / Okta Gov / their own Keycloak do NOT
+# deploy this unit.
+#
+# Install:
+#   sudo install -m 0644 cmmc-keycloak.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cmmc-keycloak
+#
+# Override knobs (set via /etc/cmmc-filebrowser/environment):
+#   KC_IMAGE        — override the image ref (default quay.io/keycloak/keycloak:25.0)
+#   KC_BIND_ADDR    — bind address (default 127.0.0.1; use 0.0.0.0 only
+#                     if fronted by a trusted reverse proxy)
+#   KC_BIND_PORT    — host port (default 8081)
+#   KC_ADMIN        — initial admin username (default "admin")
+#   KC_ADMIN_PASSWORD — initial admin password (REQUIRED; no default)
+#
+# Data: state lives in the podman named volume `cmmc-keycloak-data`.
+# Back this up or snapshot with volume tooling; losing it wipes all
+# realms + user state.
+
+[Unit]
+Description=CMMC Keycloak (OIDC IdP) via podman
+Documentation=https://www.keycloak.org/
+Documentation=file:///usr/share/doc/cmmc-filebrowser/keycloak-setup.md
+After=network-online.target
+Wants=network-online.target
+# The filebrowser unit depends on this — keycloak comes up first so
+# the callback endpoint is reachable when filebrowser starts serving.
+Before=cmmc-filebrowser.service
+
+[Service]
+Type=simple
+# Built-in defaults first, env file LAST so operators' values
+# override the defaults (systemd processes these in order; the
+# later directive wins).
+Environment=KC_IMAGE=quay.io/keycloak/keycloak:25.0
+Environment=KC_BIND_ADDR=0.0.0.0
+Environment=KC_BIND_PORT=8081
+Environment=KC_ADMIN=admin
+# TLS material lives on the host filesystem (managed by install.sh's
+# phase_tls). We mount it read-only into the container and point KC
+# at the in-container path. Keys are readable by group cmmc-
+# filebrowser; the container runs as the keycloak user (uid 1000 in
+# the upstream image) and inherits no host credentials, so the
+# container's UID doesn't match — but `:z` / bind-mount with the
+# correct mode still works since the container sees a flat fs view.
+Environment=KC_TLS_DIR=/etc/cmmc-filebrowser/tls
+EnvironmentFile=-/etc/cmmc-filebrowser/environment
+
+# Remove any stale container (previous crash / host reboot left a
+# dangling name). The `-` prefix swallows the expected error on
+# first boot when no container exists. `--replace` below also
+# handles this but being explicit keeps the failure modes obvious
+# in `journalctl`.
+ExecStartPre=-/usr/bin/podman rm -f cmmc-keycloak
+
+# Ensure the data volume exists. systemd directives are exec-style
+# (no shell), so the `||` fallback lives inside /bin/sh -c. podman
+# run would also auto-create the volume, but declaring it up front
+# gives ExecStopPost cleanup (when we add one) a stable handle.
+ExecStartPre=/bin/sh -c '/usr/bin/podman volume exists cmmc-keycloak-data || /usr/bin/podman volume create cmmc-keycloak-data'
+
+# Run Keycloak in the foreground so systemd can track it. `start-dev`
+# is intentional for single-host bundled mode: it skips cluster
+# discovery and runs the H2 file-backed store on the mounted volume.
+# For multi-host / HA deployments customers should swap to `start`
+# + external Postgres — out of scope for the bundled path.
+#
+# Bind admin to localhost only; the OIDC endpoints (/realms/.../)
+# are still reachable from the filebrowser process over loopback.
+# Operators fronting with a reverse proxy set KC_BIND_ADDR=0.0.0.0.
+# --replace kills any existing container with the name; --rm would
+# fight --replace on some podman versions (the cleanup of the
+# previous instance races the new one's start). Drop --rm — the
+# container's state is all in the volume anyway, so a dangling
+# stopped container is harmless until the next ExecStartPre rm.
+#
+# TLS: HTTP disabled; KC serves HTTPS on ${KC_BIND_PORT} using the
+# cert/key mounted at /etc/cmmc-filebrowser/tls. WebAuthn requires a
+# secure context (HTTPS or localhost), so HTTP would block passkey
+# registration from LAN browsers even if otherwise functional.
+ExecStart=/usr/bin/podman run --replace \
+  --name cmmc-keycloak \
+  --network host \
+  -e KEYCLOAK_ADMIN=${KC_ADMIN} \
+  -e KEYCLOAK_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD} \
+  -e KC_HOSTNAME_STRICT=false \
+  -e KC_HTTP_ENABLED=false \
+  -e KC_HTTPS_PORT=${KC_BIND_PORT} \
+  -e KC_HTTPS_CERTIFICATE_FILE=/opt/keycloak/tls/server.crt \
+  -e KC_HTTPS_CERTIFICATE_KEY_FILE=/opt/keycloak/tls/server.key \
+  -v cmmc-keycloak-data:/opt/keycloak/data \
+  -v ${KC_TLS_DIR}:/opt/keycloak/tls:ro,z \
+  ${KC_IMAGE} \
+  start-dev
+
+ExecStop=/usr/bin/podman stop -t 10 cmmc-keycloak
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+
+# Log via journald so the bootstrap phase can grep container output
+# during `install.sh deploy`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cmmc-keycloak
+
+[Install]
+WantedBy=multi-user.target

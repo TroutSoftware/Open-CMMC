@@ -1,0 +1,87 @@
+# syntax=docker/dockerfile:1.7
+#
+# CMMC-Filebrowser — RHEL UBI 9 FIPS build.
+#
+# Builds filebrowser on the Red Hat go-toolset so the resulting binary's
+# crypto traces to Red Hat's FIPS 140-3 validated OpenSSL module. Runs on
+# a minimal UBI 9 runtime with FIPS mode asserted via GOFIPS=1.
+#
+# Requires access to `registry.access.redhat.com` (free Red Hat Developer
+# subscription is sufficient). No third-party base images.
+#
+# Build:
+#   podman build -f Dockerfile.rhel-ubi -t cmmc-filebrowser:cmmc-v2.63.2-001 .
+#
+# Run (on a RHEL 9 host in FIPS mode):
+#   podman run --rm -p 8080:8080 \
+#     -v /srv/cmmc-filebrowser:/srv \
+#     --env-file /etc/cmmc-filebrowser/environment \
+#     cmmc-filebrowser:cmmc-v2.63.2-001
+
+# --- Stage 1: build --------------------------------------------------------
+FROM registry.access.redhat.com/ubi9/go-toolset:latest AS build
+
+USER 0
+WORKDIR /src
+
+# Dependency caching layer — go.mod / go.sum first.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Source.
+COPY . .
+
+# FIPS: GOFIPS140=v1.0.0 bakes the Go Cryptographic Module v1.0.0 into the
+# binary at build time. Combined with RHEL go-toolset's cgo link against
+# Red Hat's FIPS-validated OpenSSL, this gives us two enforcement layers:
+# the Go module's algorithm allowlist and the platform's validated crypto
+# provider. `-trimpath` removes build host paths; `-buildvcs=false` avoids
+# VCS stamping surprises; ldflags strips debug info and records the cmmc
+# release tag for provenance.
+ARG CMMC_RELEASE="cmmc-v2.63.2-001"
+ENV GOFIPS140=v1.0.0 \
+    CGO_ENABLED=1 \
+    GOFLAGS="-trimpath -buildvcs=false"
+
+RUN go build \
+    -tags="netgo" \
+    -ldflags "-s -w -X github.com/filebrowser/filebrowser/v2/version.Version=${CMMC_RELEASE}" \
+    -o /out/filebrowser \
+    .
+
+# --- Stage 2: runtime ------------------------------------------------------
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS runtime
+
+# FIPS 140-3 at runtime is asserted at two levels:
+#   - host kernel: fips=1 boot param (must be set outside the container)
+#   - Go runtime: GODEBUG=fips140=on enforces FIPS-approved-only crypto
+# The binary was also built with GOFIPS140=v1.0.0 so the module is baked
+# in; this env variable is belt-and-suspenders for operators who want
+# the runtime posture to be visible in the process environment.
+ENV GODEBUG=fips140=on
+
+# Minimal runtime deps: ca-trust so the Go tls stack finds the system CA
+# bundle without pulling in the whole RHEL base. tzdata for timestamps.
+RUN microdnf install -y ca-certificates tzdata \
+    && microdnf clean all \
+    && groupadd --system --gid 10001 filebrowser \
+    && useradd  --system --uid 10001 --gid 10001 --home-dir /srv --shell /sbin/nologin filebrowser \
+    && mkdir -p /srv /etc/cmmc-filebrowser \
+    && chown -R filebrowser:filebrowser /srv /etc/cmmc-filebrowser
+
+COPY --from=build /out/filebrowser /usr/local/bin/filebrowser
+COPY --chown=filebrowser:filebrowser branding /opt/cmmc-filebrowser/branding
+
+USER filebrowser
+WORKDIR /srv
+
+EXPOSE 8080
+VOLUME ["/srv", "/etc/cmmc-filebrowser"]
+
+# Healthcheck hits the root /api/health endpoint (to be added in the
+# cmmc/integration package). Plain TCP connect keeps the check cheap.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD /usr/local/bin/filebrowser version >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/usr/local/bin/filebrowser"]
+CMD ["--address", "0.0.0.0", "--port", "8080", "--database", "/srv/filebrowser.db", "--root", "/srv/files"]

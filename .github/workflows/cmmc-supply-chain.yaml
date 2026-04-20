@@ -1,0 +1,121 @@
+# CMMC supply-chain CI. Adds vulnerability scanning and SBOM generation
+# on every push + PR so 800-171 Rev 2 controls 3.14.1 / 3.11.2 / 3.4.1
+# have continuous evidence, not just pre-assessment snapshots.
+#
+# Kept in a separate file from upstream's ci.yaml so a monthly
+# rebase does not generate merge conflicts on the compliance additions.
+#
+# Controls:
+#   3.14.1 Identify/report/correct system flaws in a timely manner
+#   3.11.2 Scan for vulnerabilities periodically + when new vulns identified
+#   3.4.1  Establish + maintain baseline configurations + inventories (SBOM)
+#   3.13.11 FIPS-validated cryptography — reproduced via build verification
+name: CMMC Supply Chain
+
+on:
+  push:
+    branches:
+      - "cmmc/main"
+  pull_request:
+
+# Default permissions are read-only; individual jobs opt into more
+# (trivy-fs needs security-events:write to post SARIF).
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: Go Vulnerability Check (3.14.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  trivy-fs:
+    name: Trivy Filesystem Scan (3.11.2)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # scoped: only this job uploads SARIF
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run Trivy vulnerability scanner
+        # Pinned to a specific release rather than @master to keep the
+        # supply-chain scanner itself supply-chain-clean (3.4.1 irony).
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-fs.sarif"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: "trivy-fs.sarif"
+          category: "trivy-fs"
+
+  sbom:
+    name: Generate SBOM (3.4.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Generate SBOMs (SPDX + CycloneDX, single scan)
+        # One filesystem walk, two output formats. Avoids scanning the
+        # tree twice as the action-based variants would.
+        run: |
+          syft . -o spdx-json=sbom.spdx.json -o cyclonedx-json=sbom.cdx.json
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom.spdx.json
+            sbom.cdx.json
+          retention-days: 90
+
+  fips-build-verify:
+    name: FIPS Build Reproducibility (3.13.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+      - name: Build with GOFIPS140=v1.0.0
+        run: |
+          GOFIPS140=v1.0.0 go build -trimpath -buildvcs=false -o filebrowser-fips .
+      - name: Verify FIPS module enabled at runtime
+        run: |
+          cat > /tmp/fipscheck.go <<'EOF'
+          package main
+          import (
+            "crypto/fips140"
+            "fmt"
+            "os"
+          )
+          func main() {
+            if !fips140.Enabled() {
+              fmt.Println("FIPS 140 NOT enabled — regression")
+              os.Exit(1)
+            }
+            fmt.Println("FIPS 140 enabled — OK")
+          }
+          EOF
+          GOFIPS140=v1.0.0 go run /tmp/fipscheck.go

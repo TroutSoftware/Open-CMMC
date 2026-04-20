@@ -1,0 +1,11 @@
+.md_preview {
+  padding: 1rem;
+  border: 1px solid #000;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+#preview-container {
+  overflow: auto;
+  flex: 1;
+}

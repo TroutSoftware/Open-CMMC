@@ -1,0 +1,35 @@
+.input {
+  background: var(--surfacePrimary);
+  color: var(--textSecondary);
+  border: 1px solid var(--borderPrimary);
+  border-radius: 0.1em;
+  padding: 0.5em 1em;
+  transition: 0.2s ease all;
+  margin: 0;
+}
+
+.input:hover,
+.input:focus {
+  border-color: var(--borderSecondary);
+}
+
+.input--block {
+  margin-bottom: 0.5em;
+  display: block;
+  width: 100%;
+}
+
+.input--textarea {
+  line-height: 1.15;
+  font-family: monospace;
+  min-height: 10em;
+  resize: vertical;
+}
+
+.input--red {
+  background: var(--input-red) !important;
+}
+
+.input--green {
+  background: var(--input-green) !important;
+}
