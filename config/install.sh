@@ -773,6 +773,33 @@ fix_tls_perms() {
 # re-run picks up the existing values so a second `install.sh deploy`
 # doesn't invalidate existing sessions.
 
+phase_kek() {
+  # CMMC 3.13.16 / 3.8.9 — envelope encryption needs a master KEK.
+  # Without one, filebrowser boots with envelope=disabled and files
+  # land in plaintext (release warns: "NOT CMMC-compliant; for dev
+  # only"). Generating a local KEK here gives the default install an
+  # encryption-on posture; TPM sealing / HSM custody is a separate
+  # hardening step documented in docs/architecture.md §8.
+  say "KEK (envelope-encryption master key)"
+
+  local kek="$FB_ETC_DIR/kek.bin"
+  if [ -s "$kek" ]; then
+    ok "KEK already present: $kek (keeping)"
+    return 0
+  fi
+
+  install -d -m 0750 -o root -g "$FB_USER" "$FB_ETC_DIR"
+  umask 077
+  # 32 raw bytes — exactly what envelope.KeySize expects.
+  openssl rand -out "$kek" 32
+  chown "$FB_USER:$FB_USER" "$kek"
+  chmod 0400 "$kek"
+  umask 022
+  # Reset SELinux context so systemd (init_t) can read the file.
+  command -v restorecon >/dev/null 2>&1 && restorecon -F "$kek" || true
+  ok "generated KEK → $kek (owner $FB_USER, mode 0400)"
+}
+
 phase_env_file() {
   say "Seed environment file"
 
@@ -813,6 +840,11 @@ phase_env_file() {
 FB_SETTINGS_KEY=$fb_key
 FB_AUDIT_HMAC_KEY=$fb_audit
 FB_CMMC_SESSION_IDLE_TIMEOUT=15m
+# Envelope encryption — CMMC 3.13.16 / 3.8.9. "required" mode refuses
+# to start without a valid KEK, which is the production posture.
+# Downgrade to "optional" during a migration only.
+FB_CMMC_ENCRYPTION=required
+FB_CMMC_KEK_FILE=$FB_ETC_DIR/kek.bin
 # Window in which the session's OIDC MFA assertion is considered
 # "fresh" for privileged writes (classify, ACL, share, settings).
 # Default (10 min) is hostile to real workflows — 60 min still
@@ -1169,6 +1201,10 @@ cmd_uninstall() {
       find "$FB_DATA_DIR" -mindepth 1 -delete 2>/dev/null || true
     fi
     rm -f "$FB_ETC_DIR/environment"
+    # KEK — wipe alongside cabinet contents. Keeping a stale KEK after
+    # the cabinet is gone is pointless (nothing left to decrypt) and
+    # risks a new deploy picking up someone else's key by accident.
+    rm -f "$FB_ETC_DIR/kek.bin"
     rm -rf "$FB_ETC_DIR/wazuh"
     # TLS material — removed on --wipe-state so the next deploy
     # regenerates against the current FB_HOST_NAME / FB_HOST_IP.
@@ -1208,6 +1244,7 @@ cmd_deploy() {
   phase_wazuh_assets
   phase_tls
   phase_firewall
+  phase_kek
   phase_env_file
   phase_keycloak
   phase_filebrowser
