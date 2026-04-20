@@ -56,11 +56,19 @@ if [ -z "${VERSION:-}" ]; then
 fi
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-case "$ARCH" in
-  x86_64)  ARCH=amd64 ;;
-  aarch64) ARCH=arm64 ;;
-esac
+# Cross-compile when GOARCH is set (CI matrix); otherwise build for the host.
+# CGO_ENABLED=0 below means we need no target-arch C toolchain — plain Go
+# cross-compile is sufficient for our FIPS-native (GOFIPS140) build.
+if [ -n "${GOARCH:-}" ]; then
+  ARCH="$GOARCH"
+else
+  ARCH="$(uname -m)"
+  case "$ARCH" in
+    x86_64)  ARCH=amd64 ;;
+    aarch64) ARCH=arm64 ;;
+  esac
+fi
+export GOARCH="$ARCH"
 
 ARTIFACT="cmmc-filebrowser-${VERSION}-${OS}-${ARCH}"
 STAGE="$OUTPUT_DIR/$ARTIFACT"

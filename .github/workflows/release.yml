@@ -53,17 +53,29 @@ permissions:
 
 jobs:
   build:
-    name: Build + publish release tarball
+    name: Build + publish release tarball (${{ matrix.arch }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
 
     # UBI 9 go-toolset = same base as the RHEL 9 and AlmaLinux 9
     # deployment targets. The FIPS-validated crypto path is inherited
     # identically (CMVP #4774 OpenSSL module at runtime). Building on
     # a Debian-based runner would work but would diverge the binary
     # from the deployment posture — not worth the 2-minute saved.
+    #
+    # Cross-compile for both architectures from the x86_64 runner:
+    # CGO_ENABLED=0 in build-release.sh means plain Go cross-compile
+    # handles arm64 without needing an arm64 runner.
     container:
       image: registry.access.redhat.com/ubi9/go-toolset:latest
       options: --user 0:0  # dnf needs root; UBI default user is 1001
+
+    env:
+      GOARCH: ${{ matrix.arch }}
 
     steps:
       - name: Checkout (full history for git describe)
@@ -128,12 +140,12 @@ jobs:
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           printf 'Tarball: %s\nSHA256:  %s\nSize:    %s bytes\n' "$TAR" "$SHA" "$SIZE"
 
-      # Even on manual dispatch we save the artifact so operators can
-      # pull it without creating a Release (RC testing workflow).
+      # Each matrix job uploads its own arch-tagged artifact so the two
+      # parallel runs don't collide on the upload name.
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cmmc-filebrowser-${{ steps.version.outputs.version }}
+          name: cmmc-filebrowser-${{ steps.version.outputs.version }}-linux-${{ matrix.arch }}
           path: |
             ${{ env.TAR }}
           if-no-files-found: error
@@ -147,9 +159,11 @@ jobs:
           echo "${SHA}  $(basename "$TAR")" > "${TAR}.sha256"
 
       # Release-creation is gated on a real tag push. workflow_dispatch
-      # runs produce a workflow artifact only — intentional, so manual
-      # RC builds don't clutter the public Releases tab.
-      - name: Create GitHub Release
+      # runs produce workflow artifacts only (one per arch) — intentional,
+      # so manual RC builds don't clutter the public Releases tab.
+      # Both matrix jobs call softprops/action-gh-release with the same
+      # tag; the first creates the Release, the second appends its tarball.
+      - name: Create / update GitHub Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
@@ -164,28 +178,24 @@ jobs:
 
             Deployable on any RHEL 9 / AlmaLinux 9 / Rocky 9 host with
             `podman + systemd + FIPS mode` (or `SKIP_FIPS_CHECK=1` for dev).
-
-            ### Artifact
-
-            | Field | Value |
-            |---|---|
-            | File | `cmmc-filebrowser-${{ steps.version.outputs.version }}-linux-amd64.tar.gz` |
-            | Size | ${{ steps.tarball.outputs.size }} bytes |
-            | SHA256 | `${{ steps.tarball.outputs.sha }}` |
+            Tarballs are published for **linux-amd64** and **linux-arm64** —
+            pick the one matching `uname -m` on the target host.
 
             ### Install
 
             ```bash
-            TAR=cmmc-filebrowser-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+            # Pick the arch that matches your target (uname -m)
+            ARCH=amd64   # or arm64
+            VER=${{ steps.version.outputs.version }}
+            TAR=cmmc-filebrowser-$VER-linux-$ARCH.tar.gz
 
-            # Download + verify
             curl -L -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$TAR
             curl -L -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$TAR.sha256
             sha256sum --check $TAR.sha256
 
-            # Extract and deploy (no node/go/pnpm needed on target)
             tar -xzf $TAR
-            sudo ./config/install.sh deploy --from-release "$(realpath $TAR)"
+            sudo cmmc-filebrowser-$VER-linux-$ARCH/config/install.sh deploy \
+              --from-release "$(realpath $TAR)"
             ```
 
             See `docs/operator-2fa.md` for 2FA enrollment (TOTP + FIDO2) and
