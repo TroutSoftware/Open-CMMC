@@ -105,3 +105,7 @@ fb-*.log
 /fipscheck.go
 filebrowser.db*
 /tmp-*
+
+# Local-only development helpers — not published to TroutSoftware/Open-CMMC.
+/config/dev/
+/config/fresh-install.sh
