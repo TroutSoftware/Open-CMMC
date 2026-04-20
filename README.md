@@ -7,6 +7,8 @@
 [![CMMC Level 2](https://img.shields.io/badge/CMMC-Level%202%20Ready-blue)](./docs/compliance-posture.md)
 [![Compatible with Access Gate](https://img.shields.io/badge/compatible%20with-Trout%20Access%20Gate-5b2f91)](https://trout.software)
 
+![Open-CMMC file browser — CUI-marked folders with BASIC / SP-ITAR classifications visible in the listing](./img/testdata/cmmc-filebrowser.png)
+
 On-prem storage for **Controlled Unclassified Information (CUI)** at **CMMC Level 2 / NIST SP 800-171 Rev 2**. A hardened fork of [filebrowser/filebrowser](https://github.com/filebrowser/filebrowser) (Apache-2.0) that runs as a single Go binary on RHEL 9 or AlmaLinux 9 with FIPS mode enabled.
 
 Authentication is externalized to OIDC (Keycloak, Entra GCC High, Okta Gov, Ping). Files are encrypted at rest (AES-256-GCM envelope), scanned on upload (ClamAV fail-closed), and every action emits a tamper-evident audit event.
@@ -74,6 +76,10 @@ Full architecture: [`docs/architecture.md`](./docs/architecture.md) — topology
 
 Full per-control coverage: [`docs/compliance-posture.md`](./docs/compliance-posture.md) (positive posture, installed) or [`docs/gap-analysis.md`](./docs/gap-analysis.md) (pre-fork baseline). Family-level summary below.
 
+![Classify folder dialog — dropdown with CUI//BASIC, CUI//SPECIFIED, CUI//SP-PROPIN, CUI//SP-PRVCY, CUI//SP-ITAR marks, annotated as admin-gated with fresh MFA required](./img/testdata/folder_classification.png)
+
+*CUI marking UI (NIST 3.8.4) — admin + fresh MFA required; every change emits an audit event.*
+
 **Legend:** ✅ Open-CMMC directly · 🟢 Wazuh extends · 📋 Customer SSP · 🏢 Host / facility
 
 | Family | Coverage | Scope | Where Open-CMMC addresses it |
@@ -118,32 +124,48 @@ Typical SSP workflow: the customer's compliance team copies per-control statemen
 
 ## Installation
 
-One command on a fresh RHEL 9 / AlmaLinux 9 / Rocky 9 host:
+### Option 1 — from a GitHub Release tarball (recommended)
+
+No build toolchain needed on the target. Pick the arch that matches `uname -m`:
 
 ```bash
-# Enable FIPS mode (required for CMMC; skip with SKIP_FIPS_CHECK=1 on dev)
+# On the target RHEL 9 / AlmaLinux 9 / Rocky 9 host — enable FIPS first
 sudo fips-mode-setup --enable && sudo reboot
 
 # After reboot
 sudo dnf install -y podman jq curl iproute firewalld openssl policycoreutils-python-utils
 sudo systemctl enable --now firewalld
 
+# Download the release (pick amd64 or arm64 to match uname -m)
+ARCH=amd64   # or arm64
+VER=v1.0.0
+TAR=cmmc-filebrowser-$VER-linux-$ARCH.tar.gz
+curl -LO https://github.com/TroutSoftware/Open-CMMC/releases/download/$VER/$TAR
+curl -LO https://github.com/TroutSoftware/Open-CMMC/releases/download/$VER/$TAR.sha256
+sha256sum --check $TAR.sha256
+
+# Extract + deploy
+tar -xzf $TAR
+sudo cmmc-filebrowser-$VER-linux-$ARCH/config/install.sh deploy --from-release "$(realpath $TAR)"
+```
+
+In ~3 minutes: TLS-enabled filebrowser on `https://<host>:8443`, Keycloak OIDC on `https://<host>:8081`, systemd units, firewalld rules, self-signed CA + leaf cert (replaceable with customer PKI for prod), audit stream to journald, and envelope encryption (AES-256-GCM per-file) on by default with an auto-generated KEK at `/etc/cmmc-filebrowser/kek.bin`.
+
+Air-gap: same commands, just download the tarball on an internet-connected host and `scp` it to the target before the `tar -xzf` step. `install.sh --from-release` skips the build phases entirely — no Go, Node, or pnpm needed on the target.
+
+### Option 2 — from source
+
+For development or when you want to patch before installing:
+
+```bash
 git clone https://github.com/TroutSoftware/Open-CMMC.git open-cmmc
 cd open-cmmc
 sudo config/install.sh deploy
 ```
 
-In ~3 minutes: TLS-enabled filebrowser on `https://<host>:8443`, Keycloak OIDC on `https://<host>:8081`, systemd units, firewalld rules, self-signed CA + leaf cert (replaceable with customer PKI for prod), audit stream to journald.
+Needs Go 1.25, Node ≥18.12, and pnpm on the host. Same end state as Option 1.
 
-**Air-gap deployments** — build once on an internet-connected host, install without network on the target:
-
-```bash
-bash scripts/build-release.sh    # → dist/open-cmmc-<ver>-linux-<arch>.tar.gz
-# scp tarball to target, then:
-sudo config/install.sh deploy --from-release /path/to/open-cmmc-*.tar.gz
-```
-
-**Other subcommands:**
+### Common subcommands
 
 ```bash
 sudo config/install.sh deploy --with-wazuh     # baseline + bundled Wazuh SIEM
@@ -162,6 +184,10 @@ Full deployment guide: [`docs/almalinux9-setup.md`](./docs/almalinux9-setup.md).
 - **[Wazuh SIEM integration](./docs/wazuh-integration.md)** — agent install, decoder + rule drop-in, bundled-mode podman-compose.
 - **[Wazuh endpoint agents](./docs/wazuh-endpoint-agents.md)** — Windows / Linux / macOS agents for CMMC 3.14 coverage.
 - **[Audit forwarder](./docs/audit-forwarder.md)** — rsyslog-ossl mTLS for Splunk / Sentinel / Elastic.
+
+![User profile page showing groups and roles for dana (compliance → Admin ISSO, filebrowser-admins → Admin ISSO), with a Recent activity table listing Read CUI mark, cui.catalog.read, Preview, Open folder, Set CUI mark, and admin.usage.read events with timestamps and resource paths](./img/testdata/logs.png)
+
+*Per-user activity view (NIST 3.3.1 / 3.3.2) — every CUI mark change, preview, and admin action is stamped with a correlation id and emitted to the audit stream.*
 
 ---
 

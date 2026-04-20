@@ -72,6 +72,11 @@ stack extends coverage into monitoring-heavy families (3.3 audit retention,
 
 ## 3.3 — Audit & Accountability (9)
 
+![Recent activity view on Dana Reyes' profile — groups listed as compliance → Admin (ISSO), filebrowser-admins → Admin (ISSO) — followed by a chronological activity table: Read CUI mark, cui.catalog.read, Preview, Open folder, Set CUI mark, admin.usage.read, each with a timestamp and resource path](../img/testdata/logs.png)
+
+*In-product audit surface (3.3.1 / 3.3.2). The full durable stream is shipped to Wazuh / rsyslog; this per-user view is a "show me my own activity" affordance plus an admin audit tail for investigations.*
+
+
 | ID | Short title | Source | Implementation | Evidence |
 |---|---|---|---|---|
 | 3.3.1 | Create and retain audit records | ✅ | Structured JSON events emitted on every auth, file, and admin action | `cmmc/audit/emitter.go`, `http/cmmc_audit.go` |
@@ -134,6 +139,15 @@ stack extends coverage into monitoring-heavy families (3.3 audit retention,
 | 3.7.6 | Supervise maintenance without access | 📋 | Customer procedure | Customer SSP |
 
 ## 3.8 — Media Protection (9)
+
+![Classify folder dialog showing the CUI mark selector for /Management — None, CUI//BASIC, CUI//SPECIFIED, CUI//SP-PROPIN, CUI//SP-PRVCY, CUI//SP-ITAR options — with a reminder that admin + fresh MFA is required and changes take effect immediately](../img/testdata/folder_classification.png)
+
+*Folder-level CUI marking (3.8.4). Files uploaded into a marked folder inherit the mark; admin + fresh MFA gate every change.*
+
+![Classify file dialog for /Engineering/IMG_4658.HEIC showing the per-file mark selector (set to None — uncontrolled) and a required "Reason for declassification" text field with placeholder text "e.g. marked in error; legal review confirmed decontrol; data aged out" — recorded in the audit log](../img/testdata/declassifcation.png)
+
+*Per-file override and declassification flow (3.8.4 / 3.3.1). The reason is mandatory and stamped into the audit record.*
+
 
 | ID | Short title | Source | Implementation | Evidence |
 |---|---|---|---|---|

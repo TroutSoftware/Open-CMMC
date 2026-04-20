@@ -1,5 +1,9 @@
 # Operator guide — 2FA enrollment, including passkeys
 
+![Keycloak login page branded "CMMC Filebrowser — Controlled Unclassified Information — authorized use only" with the DFARS / 18 USC 1030 consent banner and the Sign in to your account form](../img/testdata/user-auth.png)
+
+*What users see at first contact — the OIDC login hosted by bundled Keycloak, with the CUI consent banner (NIST 3.1.9) and a "Try Another Way" path for FIDO2 / passkey authentication.*
+
 This guide is for **operations teams** onboarding users onto
 CMMC-Filebrowser. Two scenarios are covered in order of decreasing
 frequency:
