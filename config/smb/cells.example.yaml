@@ -1,0 +1,77 @@
+# cells.yaml — shop-floor SMB inventory for Open-CMMC
+#
+# One file drives everything: Samba shares, `hosts allow`, firewalld
+# rich rules, Unix accounts in the container, the enclave's release
+# targets, and the SSP asset-inventory rows (`cmmc-smb ssp-table`).
+# Edit this, re-run `cmmc-smb render`, restart the container.
+# Schema: cmmc/otrelease/cells.go. Design: docs/cmmc/smb-connectivity-scope.md.
+#
+# Names (cells and machines) are lowercase [a-z0-9-], ≤ 31 chars: they
+# become share names, Samba account names and directory names.
+
+cells:
+  # --- A modern cell: SMB3-capable controllers, encrypted shares -------
+  - name: cell-a
+    # Designation. Files released here must carry a mark the cell may
+    # hold: an ITAR cell accepts anything; a non-ITAR cell refuses ITAR.
+    # Files taken back from the cell inherit this mark (3.8.4).
+    # One of: "" (uncontrolled), CUI//BASIC, CUI//SPECIFIED,
+    # CUI//SP-PROPIN, CUI//SP-PRVCY, CUI//SP-ITAR.
+    mark: "CUI//BASIC"
+    # Cabinet folder (absolute within the server root) where returned
+    # files are filed, under a per-machine subfolder.
+    return_path: /Operations_CUI/NC/cell-a/return
+    # Protected Distribution System attestation. REQUIRED for any smb2 or
+    # smb1 machine (plaintext wire; 3.13.8 is met only by the physical
+    # path — scope § 5.2 checklist). For an all-smb3 cell it upgrades
+    # 3.13.11 from "3 of 5, POA&M" to "MET": confidentiality then rests on
+    # the physical safeguard and SMB3 encryption is defense-in-depth.
+    pds_attested: false
+    # SMB3 encryption posture for smb3 machines: "defense-in-depth"
+    # (default: smb encrypt = required on the share) or "off" for the
+    # strictest 3.13.11 reading once a PDS is attested.
+    encrypt: defense-in-depth
+    # Release lifetime; a release is removed from the share after this
+    # unless pinned. Default 30.
+    ttl_days: 30
+    # Intake content gate (3.14.2). Lowercase, leading dot. Defaults to
+    # the package list (.nc .mpf .spf .eia .txt .csv .tap .ptp .cnc
+    # .gcode .h .prg .min .mcd .log .json) when omitted.
+    allowed_extensions: [".nc", ".mpf", ".txt", ".csv"]
+    # Per-file cap for returned files (bytes). Default 16 MiB.
+    max_return_bytes: 16777216
+    # Files accepted per machine per UTC day. Default 500.
+    daily_quota_per_machine: 500
+    machines:
+      # ip: the ONLY source address this machine may connect from
+      # (hosts allow + firewalld). dialect: smb3 | smb2 | smb1 — the
+      # highest the controller's firmware negotiates. auth: none
+      # (default — no password; the machine is identified by its address
+      # and the physical path, so the cell must be pds_attested) or
+      # password (per-machine account set with `cmmc-smb useradd`;
+      # required in a cell without a PDS). model: free text for the
+      # asset inventory.
+      - { name: cnc-a1, ip: 10.20.1.11, dialect: smb3, auth: password, model: "Haas VF-2 NGC" }
+      - { name: cnc-a2, ip: 10.20.1.12, dialect: smb3, auth: password, model: "Mazak VCN-530C Smooth" }
+
+  # --- An SMB2-only cell: signed, plaintext wire, PDS attested ---------
+  - name: cell-b
+    mark: "CUI//BASIC"
+    return_path: /Operations_CUI/NC/cell-b/return
+    pds_attested: true
+    machines:
+      - { name: cnc-b1, ip: 10.20.2.11, dialect: smb2, auth: password, model: "Haas VF-3 (classic)" }
+      - { name: cnc-b2, ip: 10.20.2.12, dialect: smb2, model: "Haas TL-1 (no password — PDS cell)" }
+
+  # --- A legacy cell: SMB1 controllers → second (legacy) container -----
+  # smb1 machines are served by cmmc-smb-legacy on its own OT address
+  # (`cmmc-smb render --legacy-ip`). This is the one enduring exception
+  # in the design; it needs the PDS and is written into the SSP with the
+  # controllers as its subject (scope § 5.3).
+  - name: cell-legacy
+    mark: "CUI//SP-ITAR"
+    return_path: /ITAR/NC/cell-legacy/return
+    pds_attested: true
+    ttl_days: 7
+    machines:
+      - { name: fanuc-l1, ip: 10.20.9.5, dialect: smb1, auth: password, model: "Fanuc 31i Data Server" }

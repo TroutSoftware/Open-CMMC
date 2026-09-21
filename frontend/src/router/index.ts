@@ -11,6 +11,7 @@ import GlobalSettings from "@/views/settings/Global.vue";
 import ProfileSettings from "@/views/settings/Profile.vue";
 import Shares from "@/views/settings/Shares.vue";
 import Groups from "@/views/settings/Groups.vue";
+import ShopFloor from "@/views/settings/ShopFloor.vue";
 import Me from "@/views/Me.vue";
 import Errors from "@/views/Errors.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -30,6 +31,7 @@ const titles = {
   Users: "settings.users",
   User: "settings.user",
   Groups: "Groups & Permissions",
+  ShopFloor: "Shop floor",
   Me: "My profile",
   Forbidden: "errors.forbidden",
   NotFound: "errors.notFound",
@@ -108,6 +110,14 @@ const routes = [
             path: "global",
             name: "GlobalSettings",
             component: GlobalSettings,
+            meta: {
+              requiresAdmin: true,
+            },
+          },
+          {
+            path: "shopfloor",
+            name: "ShopFloor",
+            component: ShopFloor,
             meta: {
               requiresAdmin: true,
             },

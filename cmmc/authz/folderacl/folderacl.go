@@ -37,13 +37,20 @@ import (
 // folder subtree. Omitted (false) fields are denials.
 //
 // Read:  list the directory and read its contents (including CUI
-//        reads, subject to marking/MFA gates that live elsewhere).
+//
+//	reads, subject to marking/MFA gates that live elsewhere).
+//
 // Write: create, rename, overwrite, and delete within the subtree.
 // Share: generate a public share link for files in the subtree.
 type Perms struct {
 	Read  bool `json:"read"`
 	Write bool `json:"write"`
 	Share bool `json:"share"`
+	// Release: send files from the subtree to a shop-floor cell over
+	// SMB (cmmc/otrelease). A distinct grant because it moves CUI out
+	// of the enclave's encrypted store — 3.1.3 flow control, not a
+	// read. Admins hold it implicitly.
+	Release bool `json:"release"`
 }
 
 // Kind is the principal type. We deliberately avoid a free-form

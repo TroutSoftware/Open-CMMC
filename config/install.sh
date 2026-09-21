@@ -16,22 +16,38 @@
 # keys is a deliberate manual operation.
 #
 # Usage:
-#   sudo config/install.sh deploy                              # baseline (build from source)
-#   sudo config/install.sh deploy --with-wazuh                 # + bundled Wazuh
-#   sudo config/install.sh deploy --from-release <path|url>    # install from prebuilt tarball
-#   sudo config/install.sh status                              # health check
-#   sudo config/install.sh uninstall                           # clean teardown
+#   sudo FB_ADMIN_USER=jsmith config/install.sh deploy          # production
+#   sudo config/install.sh deploy --demo                        # evaluation org
+#   sudo config/install.sh deploy --with-smb --ot-ip 10.20.0.5   # + shop-floor SMB (docs/smb-shop-floor.md)
+#        optional: --ot-interface eth1 | --ot-vlan 20 | --smb-image REF | --legacy-ip IP
+#   sudo config/install.sh deploy --with-wazuh                  # + bundled Wazuh
+#   sudo config/install.sh deploy --from-release <path|url>     # prebuilt tarball
+#   sudo config/install.sh deploy --no-clamav                   # skip AV provisioning
+#   sudo config/install.sh enable-av                            # retry AV, flip to required
+#   sudo config/install.sh backup <dir>                         # full backup
+#   sudo config/install.sh restore <dir>                        # restore a backup
+#   sudo config/install.sh status                               # health check
+#   sudo config/install.sh uninstall                            # clean teardown
 #   config/install.sh help
+#
+# Who can log in — pick ONE (deploy refuses if you pick neither):
+#   FB_ADMIN_USER=<name>  provision one named administrator. Temporary
+#                         password is generated and printed once.
+#   --demo                seed the five-person evaluation roster with a
+#                         shared temp password. EVALUATION ONLY — never
+#                         on a system that will hold real CUI.
 #
 # Override knobs (env vars):
 #   FB_INSTALL_PREFIX     default /usr/local/bin
 #   FB_DATA_DIR           default /srv/cmmc-filebrowser/files
 #   FB_STATE_DIR          default /var/lib/cmmc-filebrowser
 #   FB_ETC_DIR            default /etc/cmmc-filebrowser
-#   FB_LISTEN_PORT        default 8080
+#   FB_LISTEN_PORT        default 8443
 #   FB_USER               default cmmc-filebrowser
 #   KC_BIND_PORT          default 8081 (loopback-only)
 #   SKIP_FIPS_CHECK       default 0 (set 1 on dev VMs without FIPS mode)
+#   FB_ADMIN_EMAIL        default <FB_ADMIN_USER>@localhost
+#   FB_ADMIN_FIRST/LAST   default the username
 
 set -Eeuo pipefail
 
@@ -49,7 +65,19 @@ SKIP_FIPS_CHECK="${SKIP_FIPS_CHECK:-0}"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WITH_WAZUH=0
+WITH_SMB=0
+SMB_OT_IF=""
+SMB_OT_IP=""
+SMB_IMAGE=""
+SMB_LEGACY_IP=""
+SMB_OT_VLAN=""
 WIPE_STATE=0
+# Demo roster is opt-in. See the "Who can log in" block in the header and
+# § 7 of config/keycloak/bootstrap.sh for why the default flipped.
+WITH_DEMO=0
+# Escape hatch for shops running AV at another layer (mount filter,
+# endpoint agent). Leaves 3.14.2 / 3.14.5 to the customer.
+NO_CLAMAV=0
 EXT_TLS_CERT=""
 EXT_TLS_KEY=""
 FROM_RELEASE=""
@@ -119,15 +147,32 @@ detect_host_name() {
 say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 ok()  { printf '    \033[1;32mok\033[0m %s\n' "$*"; }
 note(){ printf '    %s\n' "$*"; }
+warn(){ printf '    \033[1;33m!!\033[0m %s\n' "$*" >&2; }
 fail(){ printf '    \033[1;31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- argument parsing -------------------------------------------------
 
 cmd="${1:-help}"
 shift || true
+# Non-flag arguments (backup/restore destination). Declared before the
+# loop so `set -u` is satisfied even when nothing positional is passed.
+POSITIONAL=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-wazuh)      WITH_WAZUH=1 ;;
+    --with-smb)        WITH_SMB=1 ;;
+    --ot-vlan=*)       SMB_OT_VLAN="${1#*=}" ;;
+    --ot-vlan)         shift; SMB_OT_VLAN="$1" ;;
+    --ot-interface=*)  SMB_OT_IF="${1#*=}" ;;
+    --ot-interface)    shift; SMB_OT_IF="$1" ;;
+    --ot-ip=*)         SMB_OT_IP="${1#*=}" ;;
+    --ot-ip)           shift; SMB_OT_IP="$1" ;;
+    --smb-image=*)     SMB_IMAGE="${1#*=}" ;;
+    --smb-image)       shift; SMB_IMAGE="$1" ;;
+    --legacy-ip=*)     SMB_LEGACY_IP="${1#*=}" ;;
+    --legacy-ip)       shift; SMB_LEGACY_IP="$1" ;;
+    --demo)            WITH_DEMO=1 ;;
+    --no-clamav)       NO_CLAMAV=1 ;;
     --wipe-state)      WIPE_STATE=1 ;;
     --tls-cert=*)      EXT_TLS_CERT="${1#*=}" ;;
     --tls-cert)        shift; EXT_TLS_CERT="$1" ;;
@@ -136,7 +181,8 @@ while [ $# -gt 0 ]; do
     --from-release=*)  FROM_RELEASE="${1#*=}" ;;
     --from-release)    shift; FROM_RELEASE="$1" ;;
     --help|-h)         cmd=help ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
+    -*) echo "unknown flag: $1" >&2; exit 2 ;;
+    *) POSITIONAL+=("$1") ;;
   esac
   shift
 done
@@ -150,7 +196,10 @@ need_root() {
 # --- help -------------------------------------------------------------
 
 cmd_help() {
-  sed -n '2,22p' "$0" | sed 's/^# \?//'
+  # Print the header comment block: every line from line 2 up to the
+  # first line that is not a comment. Previously a hardcoded 2,22p,
+  # which silently truncated the usage text as the header grew.
+  awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
 }
 
 # --- preflight --------------------------------------------------------
@@ -161,6 +210,35 @@ cmd_help() {
 
 preflight() {
   say "Preflight"
+
+  # Identity posture. A realm with no administrator and no demo roster
+  # has no way in; a realm seeded with the demo roster on a production
+  # box has five accounts whose password is published in this repo.
+  # Both are install-time mistakes that are painful to unwind later, so
+  # refuse to guess and make the operator state the intent once.
+  if [ "$WITH_DEMO" = "1" ] && [ -n "${FB_ADMIN_USER:-}" ]; then
+    fail "--demo and FB_ADMIN_USER are mutually exclusive — pick one"
+  fi
+  if [ "$WITH_DEMO" = "0" ] && [ -z "${FB_ADMIN_USER:-}" ]; then
+    cat >&2 <<'EOF'
+
+  No login identity selected. Choose one:
+
+    Production — provision one named administrator:
+      sudo FB_ADMIN_USER=jsmith config/install.sh deploy
+
+    Evaluation — seed the five-person demo org (shared temp password,
+    never on a system that will hold real CUI):
+      sudo config/install.sh deploy --demo
+
+EOF
+    fail "refusing to deploy without an administrator or --demo"
+  fi
+  if [ "$WITH_DEMO" = "1" ]; then
+    warn "demo roster enabled — evaluation only, not for real CUI"
+  else
+    ok "administrator: ${FB_ADMIN_USER}"
+  fi
 
   # OS: RHEL/Alma/Rocky 9. We don't try to support other distros here
   # because the FIPS posture, SELinux policy, and systemd version
@@ -800,6 +878,144 @@ phase_kek() {
   ok "generated KEK → $kek (owner $FB_USER, mode 0400)"
 }
 
+# --- clamav -----------------------------------------------------------
+#
+# CMMC 3.14.2 / 3.14.4 / 3.14.5. Open-CMMC has had an INSTREAM ClamAV
+# client since v1.0.0, but the installer never provisioned clamd and
+# never set FB_CMMC_AV — so scanning shipped off and every deployment
+# was silently unscanned. This phase closes that.
+#
+# Sequencing matters and is not negotiable:
+#   1. install packages
+#   2. fetch signatures (freshclam) — clamd will not start without a
+#      signature database
+#   3. start clamd, wait for it to answer
+#   4. only then does phase_env_file write FB_CMMC_AV=required
+#
+# If any step fails we fall back to FB_CMMC_AV=optional rather than
+# required. This is deliberate: required mode is fail-closed at boot,
+# so writing it when clamd is not answering would leave the operator
+# with an appliance that refuses to start and no obvious cause.
+# Optional mode keeps the appliance usable and says loudly that
+# scanning is not active.
+#
+# AV_MODE is consumed by phase_env_file.
+AV_MODE="required"
+
+phase_clamav() {
+  say "ClamAV (malicious-code protection)"
+
+  if [ "$NO_CLAMAV" = "1" ]; then
+    AV_MODE="disabled"
+    warn "--no-clamav: scanning disabled; 3.14.2 / 3.14.5 are yours to cover"
+    return 0
+  fi
+
+  # clamd + the signature updater. clamav-update carries freshclam.
+  if ! rpm -q clamd >/dev/null 2>&1 || ! rpm -q clamav-update >/dev/null 2>&1; then
+    if ! dnf install -y clamav clamd clamav-update >/dev/null 2>&1; then
+      AV_MODE="optional"
+      warn "could not install clamav packages (no repo access?)"
+      note "uploads will NOT be scanned. See docs/day2-operations.md → antivirus"
+      return 0
+    fi
+  fi
+  ok "packages present (clamav, clamd, clamav-update)"
+
+  # Listen on loopback TCP rather than a unix socket: no SELinux
+  # socket-context coupling between the clamd and filebrowser service
+  # domains, and nothing is exposed because phase_firewall never opens
+  # 3310. LocalSocket stays configured for clamdscan CLI use.
+  local conf=/etc/clamd.d/scan.conf
+  if [ -f "$conf" ]; then
+    # These ship commented-out in the RHEL package.
+    sed -i 's/^#\?LocalSocket .*/LocalSocket \/run\/clamd.scan\/clamd.sock/' "$conf"
+    sed -i 's/^#\?TCPSocket .*/TCPSocket 3310/'                              "$conf"
+    sed -i 's/^#\?TCPAddr .*/TCPAddr 127.0.0.1/'                             "$conf"
+    grep -q '^TCPSocket'  "$conf" || echo 'TCPSocket 3310'    >> "$conf"
+    grep -q '^TCPAddr'    "$conf" || echo 'TCPAddr 127.0.0.1' >> "$conf"
+    # The package ships a literal "Example" line that makes clamd
+    # refuse to start until removed.
+    sed -i '/^Example$/d' "$conf"
+    ok "clamd configured on 127.0.0.1:3310"
+  else
+    AV_MODE="optional"
+    warn "no $conf after install — clamd layout unexpected"
+    return 0
+  fi
+
+  # Signatures. This is the step that needs egress (or an internal
+  # mirror configured in /etc/freshclam.conf) and the step most likely
+  # to fail on an air-gapped host.
+  sed -i '/^Example$/d' /etc/freshclam.conf 2>/dev/null || true
+  if [ ! -s /var/lib/clamav/daily.cvd ] && [ ! -s /var/lib/clamav/daily.cld ]; then
+    say "  fetching initial signature database (this takes a few minutes)"
+    if ! freshclam --quiet; then
+      AV_MODE="optional"
+      warn "freshclam could not fetch signatures"
+      note "air-gapped? point /etc/freshclam.conf at an internal mirror, run"
+      note "freshclam, then: sudo config/install.sh enable-av"
+      return 0
+    fi
+  fi
+  ok "signature database present"
+
+  # Keep signatures current — 3.14.4.
+  systemctl enable --now clamav-freshclam >/dev/null 2>&1 ||
+    warn "clamav-freshclam not enabled — signatures will go stale (3.14.4)"
+
+  # Let clamd read the cabinet under SELinux enforcing.
+  command -v setsebool >/dev/null 2>&1 &&
+    setsebool -P antivirus_can_scan_system 1 2>/dev/null || true
+
+  systemctl enable --now clamd@scan >/dev/null 2>&1 || true
+
+  # clamd loads the full signature set into memory before it answers;
+  # on modest hardware that is 30-60 s. Poll rather than assume.
+  local waited=0
+  while [ "$waited" -lt 120 ]; do
+    if (exec 3<>/dev/tcp/127.0.0.1/3310) 2>/dev/null; then
+      exec 3<&- 2>/dev/null || true
+      break
+    fi
+    sleep 3; waited=$((waited + 3))
+  done
+
+  if [ "$waited" -ge 120 ]; then
+    AV_MODE="optional"
+    warn "clamd did not answer on 127.0.0.1:3310 within 120s"
+    note "check: systemctl status clamd@scan; journalctl -u clamd@scan"
+    return 0
+  fi
+
+  ok "clamd answering after ${waited}s — scanning will be fail-closed (required)"
+}
+
+# Re-run the AV phase and flip an existing deployment to required.
+# The deploy path never rewrites the env file, so an operator who
+# fixed signatures after a failed first run needs this.
+cmd_enable_av() {
+  need_root
+  NO_CLAMAV=0
+  phase_clamav
+  local env="$FB_ETC_DIR/environment"
+  [ -f "$env" ] || fail "no env file at $env — run deploy first"
+
+  if [ "$AV_MODE" != "required" ]; then
+    fail "clamd still not healthy — not changing FB_CMMC_AV (see warnings above)"
+  fi
+  if grep -q '^FB_CMMC_AV=' "$env"; then
+    sed -i 's|^FB_CMMC_AV=.*|FB_CMMC_AV=required|' "$env"
+  else
+    printf '\nFB_CMMC_AV=required\nFB_CMMC_AV_ADDR=tcp://127.0.0.1:3310\n' >> "$env"
+  fi
+  grep -q '^FB_CMMC_AV_ADDR=' "$env" ||
+    printf 'FB_CMMC_AV_ADDR=tcp://127.0.0.1:3310\n' >> "$env"
+  ok "FB_CMMC_AV=required written to $env"
+  systemctl restart cmmc-filebrowser 2>/dev/null || true
+  ok "filebrowser restarted — uploads are now scanned fail-closed"
+}
+
 phase_env_file() {
   say "Seed environment file"
 
@@ -845,6 +1061,13 @@ FB_CMMC_SESSION_IDLE_TIMEOUT=15m
 # Downgrade to "optional" during a migration only.
 FB_CMMC_ENCRYPTION=required
 FB_CMMC_KEK_FILE=$FB_ETC_DIR/kek.bin
+# Malicious-code protection — CMMC 3.14.2 / 3.14.5. "required" is
+# fail-closed: a sick clamd returns 503 rather than letting an
+# unscanned file through. Set to the posture phase_clamav actually
+# achieved; if it reads "optional" here, clamd was not healthy at
+# install time — fix it and run: sudo config/install.sh enable-av
+FB_CMMC_AV=$AV_MODE
+FB_CMMC_AV_ADDR=tcp://127.0.0.1:3310
 # Window in which the session's OIDC MFA assertion is considered
 # "fresh" for privileged writes (classify, ACL, share, settings).
 # Default (10 min) is hostile to real workflows — 60 min still
@@ -962,11 +1185,18 @@ phase_keycloak() {
   local ip_origin="https://$host_ip_here:$FB_LISTEN_PORT"
   local name_origin="https://$host_name_here:$FB_LISTEN_PORT"
 
+  # SEED_USERS / FB_ADMIN_USER carry the identity posture resolved in
+  # preflight. Exactly one of the two is set there.
   KEYCLOAK_CONTAINER=cmmc-keycloak \
     KC_URL="https://127.0.0.1:$KC_BIND_PORT" \
     FB_OIDC_REDIRECT_URI="$FB_OIDC_REDIRECT_URI" \
     REDIRECT_URIS="$ip_redir $name_redir ${REDIRECT_URIS_EXTRA:-}" \
     WEB_ORIGINS="$ip_origin $name_origin" \
+    SEED_USERS="$WITH_DEMO" \
+    FB_ADMIN_USER="${FB_ADMIN_USER:-}" \
+    FB_ADMIN_EMAIL="${FB_ADMIN_EMAIL:-}" \
+    FB_ADMIN_FIRST="${FB_ADMIN_FIRST:-}" \
+    FB_ADMIN_LAST="${FB_ADMIN_LAST:-}" \
     CURL_OPTS="-k" \
     "$bootstrap"
   ok "bootstrap complete"
@@ -1064,6 +1294,45 @@ phase_wazuh_start() {
 
 # --- status + summary ------------------------------------------------
 
+# --- Shop-floor SMB delivery (only if --with-smb) ----------------------
+# Thin wrapper: the real work is config/smb/install-smb.sh (idempotent,
+# also runnable on its own after deploy). Needs /etc/cmmc-smb/cells.yaml
+# to exist — the inventory is site-specific and cannot be guessed.
+phase_smb() {
+  [ "$WITH_SMB" -eq 1 ] || return 0
+  say "Shop-floor SMB delivery (--with-smb)"
+  [ -n "$SMB_OT_IP" ] || fail "--with-smb needs --ot-ip <address the controllers connect to>"
+  local bin=/usr/local/bin/cmmc-smb
+  if [ -x "$REPO_DIR/bin/cmmc-smb" ]; then
+    install -m 0755 "$REPO_DIR/bin/cmmc-smb" "$bin"          # release tarball
+  else
+    (cd "$REPO_DIR" && GOFIPS140=v1.0.0 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$bin" ./smb/cmd/cmmc-smb) \
+      || fail "could not build cmmc-smb"
+  fi
+  ok "cmmc-smb installed at $bin"
+  if [ ! -f /etc/cmmc-smb/cells.yaml ]; then
+    install -d -m 0750 /etc/cmmc-smb
+    install -m 0640 "$REPO_DIR/config/smb/cells.example.yaml" /etc/cmmc-smb/cells.example.yaml
+    # Start empty: no shares, no firewall rules. The first cell is added
+    # from the web UI (Settings → Shop floor) or by editing this file.
+    cat > /etc/cmmc-smb/cells.yaml <<'EOF_CELLS'
+# Shop-floor inventory — managed from the Open-CMMC web UI (Settings → Shop floor).
+# Hand edits are fine; see cells.example.yaml in this directory for every field.
+cells: []
+EOF_CELLS
+    chmod 0640 /etc/cmmc-smb/cells.yaml
+    note "no inventory yet — add your cells and machines in the web UI (Settings → Shop floor)"
+  fi
+  local args=(--ot-ip "$SMB_OT_IP" --bin "$bin")
+  [ -n "$SMB_OT_IF" ] && args+=(--ot-interface "$SMB_OT_IF")
+  [ -n "$SMB_OT_VLAN" ] && args+=(--ot-vlan "$SMB_OT_VLAN")
+  [ -n "$SMB_IMAGE" ] && args+=(--image "$SMB_IMAGE")
+  [ -n "$SMB_LEGACY_IP" ] && args+=(--legacy-ip "$SMB_LEGACY_IP")
+  ENV_FILE="$FB_ETC_DIR/environment" FB_USER="$FB_USER" bash "$REPO_DIR/config/smb/install-smb.sh" "${args[@]}"
+  systemctl restart cmmc-filebrowser.service
+  ok "shop-floor SMB enabled — next: cmmc-smb useradd <machine> for each controller"
+}
+
 phase_summary() {
   say "Summary"
   local host_ip host_name
@@ -1106,16 +1375,221 @@ token verification to.
 Override the hostname at deploy time (picks a different SAN):
   sudo FB_HOST_NAME=filebrowser.customer.internal install.sh deploy
 
-Default Keycloak users (temp password: WelcomeCMMC2026!):
+EOF
+
+  if [ "$WITH_DEMO" = "1" ]; then
+    cat <<EOF
+>>> EVALUATION ROSTER ACTIVE <<<
+
+Demo users (temp password: ${SEED_TEMP_PASSWORD:-WelcomeCMMC2026!}):
   dana   — filebrowser-admins + compliance (admin)
   alice  — engineering
   bob    — operations
   carol  — management
   dave   — sales
+
+These accounts share a password published in the Open-CMMC repository.
+Delete them before this system holds real CUI, and redeploy with
+FB_ADMIN_USER=<name> instead of --demo.
+EOF
+  else
+    cat <<EOF
+>>> Administrator <<<
+
+  $FB_ADMIN_USER — filebrowser-admins + compliance
+  Temporary password was printed once during the Keycloak bootstrap
+  phase above. Scroll up if you have not captured it; if it is lost,
+  reset it from the Keycloak admin console.
+EOF
+  fi
+
+  if [ "$AV_MODE" = "required" ]; then
+    cat <<EOF
+
+>>> Antivirus <<<
+
+  Fail-closed scan-on-upload is ACTIVE (FB_CMMC_AV=required, clamd on
+  127.0.0.1:3310). An infected upload is refused with 422; an
+  unreachable clamd returns 503 rather than storing unscanned bytes.
+  Signature updates run via clamav-freshclam.
+EOF
+  else
+    cat <<EOF
+
+>>> Antivirus — NOT ACTIVE <<<
+
+  FB_CMMC_AV=$AV_MODE. Uploads are not being scanned, so NIST 3.14.2
+  and 3.14.5 are not met by the product on this host.
+
+  Fix the cause reported above, then:
+      sudo config/install.sh enable-av
+
+  Air-gapped hosts: point /etc/freshclam.conf at an internal mirror,
+  run freshclam, then enable-av.
+EOF
+  fi
+
+  cat <<EOF
 First login forces password change + TOTP enrollment (CMMC 3.5.3).
 Security keys — once DNS is in place — enroll from the Account
 Console. See docs/operator-2fa.md.
+
+>>> BACK UP THE KEK BEFORE STORING ANY CUI <<<
+
+  $FB_ETC_DIR/kek.bin
+
+Every file in the cabinet is encrypted under this 32-byte key. It is
+generated on this host and stored nowhere else. If it is lost, the
+cabinet is unrecoverable — there is no escrow, no recovery code, and
+no vendor copy.
+
+  sudo config/install.sh backup /mnt/removable/open-cmmc-\$(date +%F)
+
+Then move that directory to media held separately from this appliance,
+and verify it restores on a spare host before you trust it. Full
+procedure: docs/backup-restore.md
 EOF
+}
+
+# --- backup / restore -------------------------------------------------
+#
+# What has to survive a total loss of this host, and why:
+#
+#   kek.bin        the 32-byte envelope master key. Without it every
+#                  file in the cabinet is ciphertext forever. This is
+#                  the single irreplaceable artifact.
+#   environment    FB_SETTINGS_KEY (JWT signing), FB_AUDIT_HMAC_KEY
+#                  (audit chain continuity), OIDC client secret. Losing
+#                  the HMAC key breaks chain verification across the
+#                  restore boundary — the audit history stays readable
+#                  but no longer verifies as one chain.
+#   filebrowser.db users, folder ACLs, CUI marks, share rows.
+#   cabinet        the files themselves (already envelope-encrypted on
+#                  disk, but back them up encrypted anyway).
+#   keycloak       realm export: users, groups, TOTP credentials.
+#
+# The backup is NOT independently encrypted. It contains kek.bin in the
+# clear, so the archive is exactly as sensitive as the cabinet itself
+# and must go to media with the same handling controls. Independent
+# backup-key custody (800-171 3.8.9) is not implemented — see
+# docs/backup-restore.md for what that means for your SSP.
+
+backup_manifest() {
+  printf '%s\n' \
+    "open-cmmc backup" \
+    "created: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "host: $(hostname)" \
+    "version: $("$FB_INSTALL_PREFIX/filebrowser" version 2>/dev/null | head -1 || echo unknown)" \
+    "etc: $FB_ETC_DIR" \
+    "state: $FB_STATE_DIR" \
+    "data: $FB_DATA_DIR"
+}
+
+cmd_backup() {
+  need_root
+  local dest="${1:-}"
+  [ -n "$dest" ] || fail "usage: install.sh backup <destination-dir>"
+  [ -e "$dest" ] && fail "destination already exists: $dest (pick a new path)"
+
+  say "Backup → $dest"
+  install -d -m 0700 "$dest"
+
+  # Config + keys. cp -a preserves the 0400/0600 modes the daemon
+  # enforces on restore.
+  if [ -d "$FB_ETC_DIR" ]; then
+    cp -a "$FB_ETC_DIR" "$dest/etc"
+    ok "config + keys (includes kek.bin)"
+  else
+    fail "no config dir at $FB_ETC_DIR — is this an installed host?"
+  fi
+
+  # BoltDB. Stop-free copy is unsafe while the service writes, so take
+  # the service down for the copy and bring it back. A backup that
+  # silently captures a torn database is worse than no backup.
+  local was_active=0
+  if systemctl is-active --quiet cmmc-filebrowser; then
+    was_active=1
+    systemctl stop cmmc-filebrowser
+  fi
+  install -d -m 0700 "$dest/state"
+  if [ -f "$FB_STATE_DIR/filebrowser.db" ]; then
+    cp -a "$FB_STATE_DIR/filebrowser.db" "$dest/state/"
+    ok "state database (service quiesced for a consistent copy)"
+  else
+    warn "no filebrowser.db found at $FB_STATE_DIR"
+  fi
+
+  # Cabinet.
+  if [ -d "$FB_DATA_DIR" ]; then
+    cp -a "$FB_DATA_DIR" "$dest/cabinet"
+    ok "cabinet ($(du -sh "$FB_DATA_DIR" 2>/dev/null | cut -f1))"
+  fi
+
+  [ "$was_active" = "1" ] && systemctl start cmmc-filebrowser
+
+  # Keycloak realm — users, groups, enrolled TOTP credentials. Without
+  # this a restore leaves every user re-enrolling their second factor.
+  if podman container exists cmmc-keycloak 2>/dev/null; then
+    if podman exec cmmc-keycloak /opt/keycloak/bin/kc.sh export \
+         --realm cmmc --file /tmp/cmmc-realm.json >/dev/null 2>&1 &&
+       podman cp cmmc-keycloak:/tmp/cmmc-realm.json "$dest/cmmc-realm.json" 2>/dev/null; then
+      podman exec cmmc-keycloak rm -f /tmp/cmmc-realm.json 2>/dev/null || true
+      ok "keycloak realm export"
+    else
+      warn "keycloak realm export failed — users/TOTP will need re-provisioning on restore"
+    fi
+  else
+    warn "cmmc-keycloak container not found — skipping realm export"
+  fi
+
+  backup_manifest > "$dest/MANIFEST"
+  chmod -R go-rwx "$dest"
+  ok "backup complete: $dest"
+  warn "this archive contains kek.bin in the clear — handle it as CUI"
+  note "verify it: restore onto a spare host before you rely on it"
+}
+
+cmd_restore() {
+  need_root
+  local src="${1:-}"
+  [ -n "$src" ] || fail "usage: install.sh restore <backup-dir>"
+  [ -f "$src/MANIFEST" ] || fail "no MANIFEST in $src — not an install.sh backup"
+
+  say "Restore ← $src"
+  cat "$src/MANIFEST"
+
+  # Refuse to restore over a live cabinet. Overwriting a populated
+  # cabinet with an older one is unrecoverable in the other direction.
+  if [ -d "$FB_DATA_DIR" ] && [ -n "$(ls -A "$FB_DATA_DIR" 2>/dev/null)" ]; then
+    fail "cabinet at $FB_DATA_DIR is not empty — run 'uninstall --wipe-state' first if you really mean to replace it"
+  fi
+
+  systemctl stop cmmc-filebrowser 2>/dev/null || true
+
+  cp -a "$src/etc/." "$FB_ETC_DIR/"
+  ok "config + keys restored"
+  install -d -m 0750 -o "$FB_USER" -g "$FB_USER" "$FB_STATE_DIR"
+  [ -f "$src/state/filebrowser.db" ] && cp -a "$src/state/filebrowser.db" "$FB_STATE_DIR/"
+  install -d -m 0750 -o "$FB_USER" -g "$FB_USER" "$FB_DATA_DIR"
+  [ -d "$src/cabinet" ] && cp -a "$src/cabinet/." "$FB_DATA_DIR/"
+  chown -R "$FB_USER:$FB_USER" "$FB_STATE_DIR" "$FB_DATA_DIR"
+  ok "state + cabinet restored"
+
+  # SELinux contexts do not survive a cp from removable media.
+  command -v restorecon >/dev/null 2>&1 && restorecon -RF "$FB_ETC_DIR" "$FB_STATE_DIR" "$FB_DATA_DIR" 2>/dev/null || true
+
+  if [ -f "$src/cmmc-realm.json" ] && podman container exists cmmc-keycloak 2>/dev/null; then
+    podman cp "$src/cmmc-realm.json" cmmc-keycloak:/tmp/cmmc-realm.json 2>/dev/null &&
+      podman exec cmmc-keycloak /opt/keycloak/bin/kc.sh import \
+        --file /tmp/cmmc-realm.json --override true >/dev/null 2>&1 &&
+      ok "keycloak realm imported" ||
+      warn "realm import failed — re-provision users manually"
+  fi
+
+  systemctl start cmmc-filebrowser 2>/dev/null || true
+  ok "restore complete"
+  note "audit chain: events from before the restore verify as their own"
+  note "chain; the first event after restore starts a new segment."
 }
 
 # --- status command --------------------------------------------------
@@ -1133,6 +1607,51 @@ cmd_status() {
     "https://127.0.0.1:$FB_LISTEN_PORT/" || echo "filebrowser: not reachable"
   curl -skf -o /dev/null -w 'keycloak    :%{http_code}\n' \
     "https://127.0.0.1:$KC_BIND_PORT/realms/master" || echo "keycloak: not reachable"
+
+  # Antivirus posture. Two things can disagree here and both matter:
+  # what the env file asks for, and whether clamd is actually
+  # answering. Report both rather than a single green/red.
+  echo
+  echo "--- antivirus (3.14.2 / 3.14.5) ---"
+  local declared="unset"
+  if [ -f "$FB_ETC_DIR/environment" ]; then
+    # `|| true` for the same pipefail reason as the find below: an env
+    # file predating this feature has no FB_CMMC_AV line, grep exits 1,
+    # and status would abort instead of reporting "unset".
+    declared=$(grep -E '^FB_CMMC_AV=' "$FB_ETC_DIR/environment" 2>/dev/null | cut -d= -f2 || true)
+    [ -n "$declared" ] || declared="unset"
+  fi
+  echo "configured  : FB_CMMC_AV=$declared"
+
+  if (exec 3<>/dev/tcp/127.0.0.1/3310) 2>/dev/null; then
+    exec 3<&- 2>/dev/null || true
+    echo "clamd       : answering on 127.0.0.1:3310"
+  else
+    echo "clamd       : NOT answering on 127.0.0.1:3310"
+    if [ "$declared" = "required" ]; then
+      echo "              filebrowser will refuse to start in this state (fail-closed)"
+    else
+      echo "              uploads are NOT being scanned"
+    fi
+  fi
+
+  # `|| true` is load-bearing: under `set -o pipefail` a failing find
+  # (no /var/lib/clamav on a host that never installed clamav) fails
+  # the whole pipeline and `set -e` aborts status entirely.
+  local sigs
+  sigs=$(find /var/lib/clamav -name 'daily.c[lv]d' -mtime -7 2>/dev/null | head -1 || true)
+  if [ -n "$sigs" ]; then
+    echo "signatures  : current (updated within 7 days)"
+  elif [ -e /var/lib/clamav/daily.cvd ] || [ -e /var/lib/clamav/daily.cld ]; then
+    echo "signatures  : STALE (older than 7 days) — check clamav-freshclam (3.14.4)"
+  else
+    echo "signatures  : absent — run freshclam"
+  fi
+
+  if [ "$declared" != "required" ]; then
+    echo
+    echo "  To turn on fail-closed scanning: sudo config/install.sh enable-av"
+  fi
 }
 
 # --- uninstall --------------------------------------------------------
@@ -1245,10 +1764,12 @@ cmd_deploy() {
   phase_tls
   phase_firewall
   phase_kek
+  phase_clamav
   phase_env_file
   phase_keycloak
   phase_filebrowser
   phase_wazuh_start
+  phase_smb
   phase_summary
 }
 
@@ -1256,6 +1777,9 @@ cmd_deploy() {
 
 case "$cmd" in
   deploy)    cmd_deploy ;;
+  backup)    cmd_backup "${POSITIONAL[0]:-}" ;;
+  restore)   cmd_restore "${POSITIONAL[0]:-}" ;;
+  enable-av) cmd_enable_av ;;
   status)    cmd_status ;;
   uninstall) cmd_uninstall ;;
   help|"")   cmd_help ;;

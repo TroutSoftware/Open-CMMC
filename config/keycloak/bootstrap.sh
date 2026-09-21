@@ -498,9 +498,21 @@ SECRET=$(kc POST "/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret" | jq 
 #   * is enabled and emailVerified (no admin-moderation step needed),
 #   * belongs to one or more of the groups created in section 4.
 #
-# Disable this block with SEED_USERS=0 for production deployments that
-# manage identity exclusively via IdP federation.
-SEED_USERS="${SEED_USERS:-1}"
+# SEEDING POSTURE (changed 2026-08-25 — was default-on):
+#
+# The demo roster is OFF by default. A CUI system must never come up
+# holding accounts whose password is published in this repository, and
+# the previous default did exactly that on every production install —
+# the opt-out (SEED_USERS=0) was undocumented outside this comment.
+#
+#   SEED_USERS=1  → the five-person evaluation org below. Evaluation and
+#                   demo only. install.sh surfaces this as `--demo`.
+#   SEED_USERS=0  → no demo accounts (default). Provision one real
+#                   administrator via FB_ADMIN_USER instead; see § 7a.
+#
+# One of the two MUST be chosen: a realm with neither a demo roster nor
+# an administrator has no way in, so install.sh gates on it in preflight.
+SEED_USERS="${SEED_USERS:-0}"
 
 # user roster: username:email:firstname:lastname:groups(comma-separated)
 # Groups must already exist in CMMC_GROUPS. filebrowser-admins promotes
@@ -562,18 +574,65 @@ EOF
     "$username" "$groups_csv" >&2
 }
 
+# Snapshot before § 7a may repoint TEMP_PASSWORD at the admin account,
+# so the closing summary reports the password the roster was built with.
+DEMO_TEMP_PASSWORD="$TEMP_PASSWORD"
 if [ "$SEED_USERS" = "1" ]; then
-  log "Seeding starter users"
+  log "Seeding starter users (EVALUATION ROSTER — not for production)"
   for entry in "${CMMC_USERS[@]}"; do
     IFS=':' read -r u e f l g <<< "$entry"
     seed_user "$u" "$e" "$f" "$l" "$g"
   done
 fi
 
+# --- 7a. Production administrator ------------------------------------------
+#
+# The production counterpart to the demo roster: exactly one named human
+# who can administer the appliance, created from operator-supplied
+# identity rather than a roster baked into this file.
+#
+#   FB_ADMIN_USER   (required to take this path) e.g. jsmith
+#   FB_ADMIN_EMAIL  defaults to <user>@<FB_ADMIN_EMAIL_DOMAIN|localhost>
+#   FB_ADMIN_FIRST / FB_ADMIN_LAST  cosmetic, default to the username
+#
+# The temporary password is generated here, never defaulted to a
+# constant, and printed once on stderr. Like the demo roster the account
+# carries UPDATE_PASSWORD + CONFIGURE_TOTP, so the operator rotates it
+# and enrolls a second factor on first login (3.5.3 / 3.5.7).
+#
+# Groups: filebrowser-admins (appliance admin) + compliance (ISSO view).
+# Same pair the demo 'dana' account carried, so the folder ACL rules in
+# cmmc/cabinet apply unchanged.
+ADMIN_TEMP_PASSWORD=""
+if [ -n "${FB_ADMIN_USER:-}" ]; then
+  admin_email="${FB_ADMIN_EMAIL:-${FB_ADMIN_USER}@${FB_ADMIN_EMAIL_DOMAIN:-localhost}}"
+  admin_first="${FB_ADMIN_FIRST:-$FB_ADMIN_USER}"
+  admin_last="${FB_ADMIN_LAST:-$FB_ADMIN_USER}"
+
+  # Only mint a password if we are about to create the account. On a
+  # re-run the row already exists and seed_user preserves it; printing a
+  # fresh password the operator cannot use would be worse than silence.
+  if [ -z "$(kc GET "/admin/realms/$REALM/users?username=$FB_ADMIN_USER&exact=true" | jq -r '.[0].id // empty')" ]; then
+    # 24 chars of base64 over 18 random bytes. openssl is already a hard
+    # dependency of install.sh (TLS + KEK generation).
+    ADMIN_TEMP_PASSWORD="$(openssl rand -base64 18)"
+    TEMP_PASSWORD="$ADMIN_TEMP_PASSWORD"
+  fi
+
+  log "Provisioning administrator '$FB_ADMIN_USER'"
+  seed_user "$FB_ADMIN_USER" "$admin_email" "$admin_first" "$admin_last" \
+    "filebrowser-admins,compliance"
+fi
+
 # --- 8. Done ---------------------------------------------------------------
 
 log "Realm '$REALM' configured. Client secret follows on stdout (single line)."
 if [ "$SEED_USERS" = "1" ]; then
-  log "Seeded users use temp password: $TEMP_PASSWORD (forced rotation + TOTP on first login)"
+  log "Seeded users use temp password: $DEMO_TEMP_PASSWORD (forced rotation + TOTP on first login)"
+  log "EVALUATION ROSTER IS ACTIVE — delete these accounts before handling real CUI."
+fi
+if [ -n "$ADMIN_TEMP_PASSWORD" ]; then
+  log "Administrator '$FB_ADMIN_USER' temporary password: $ADMIN_TEMP_PASSWORD"
+  log "Shown once. Rotation + TOTP enrollment are forced on first login."
 fi
 echo "$SECRET"

@@ -1,0 +1,27 @@
+# Golden-test fixture for smb/render. Mirrors config/smb/cells.example.yaml
+# (keep the two in step). Three cells, one per posture:
+#   cell-a       smb3, encrypt defaults to defense-in-depth  -> N-enc share
+#   cell-b       smb2, pds_attested                          -> N-signed share
+#   cell-legacy  smb1, pds_attested                          -> legacy container
+# Machines in cell-a are deliberately listed out of order so the golden
+# proves the renderer sorts (hosts allow / valid users must be stable).
+cells:
+  - name: cell-a
+    mark: "CUI//BASIC"
+    return_path: /Operations_CUI/NC/cell-a/return
+    machines:
+      - { name: cnc-a2, ip: 10.20.1.12, dialect: smb3, auth: password, model: "Mazak VCN-530C Smooth" }
+      - { name: cnc-a1, ip: 10.20.1.11, dialect: smb3, auth: password, model: "Haas VF-2 NGC" }
+  - name: cell-b
+    mark: "CUI//BASIC"
+    return_path: /Operations_CUI/NC/cell-b/return
+    pds_attested: true
+    machines:
+      - { name: cnc-b1, ip: 10.20.2.11, dialect: smb2, auth: password, model: "Haas VF-3 (classic)" }
+      - { name: cnc-b2, ip: 10.20.2.12, dialect: smb2, model: "Haas TL-1 (no password — PDS cell)" }
+  - name: cell-legacy
+    mark: "CUI//SP-ITAR"
+    return_path: /ITAR/NC/cell-legacy/return
+    pds_attested: true
+    machines:
+      - { name: fanuc-l1, ip: 10.20.9.5, dialect: smb1, auth: password, model: "Fanuc 31i Data Server" }

@@ -121,6 +121,14 @@ func NewHandler(
 	cmmc.Handle("/acl", monkey(withFreshMFA(withAuditEmit(audit.ActionCUIACLSet, aclPutHandler)), "")).Methods("PUT")
 	cmmc.Handle("/acl", monkey(withFreshMFA(withAuditEmit(audit.ActionCUIACLDelete, aclDeleteHandler)), "")).Methods("DELETE")
 	cmmc.Handle("/acls", monkey(withAuditEmit(audit.ActionCUIACLRead, aclListHandler), "")).Methods("GET")
+	// CMMC 3.1.3 / 3.3.1 — shop-floor SMB release (cmmc/otrelease). Reads open
+	// to any authed user; release/revoke need fresh MFA + admin or ACL grant.
+	cmmc.Handle("/ot/cells", monkey(withAuditEmit(audit.ActionOTCellsRead, otCellsHandler), "")).Methods("GET")
+	cmmc.Handle("/ot/released", monkey(withAuditEmit(audit.ActionOTReleasedRead, otReleasedHandler), "")).Methods("GET")
+	cmmc.Handle("/ot/release", monkey(withFreshMFA(otReleaseHandler), "")).Methods("POST")
+	cmmc.Handle("/ot/release", monkey(withFreshMFA(otRevokeHandler), "")).Methods("DELETE")
+	cmmc.Handle("/ot/inventory", monkey(withAuditEmit(audit.ActionOTCellsRead, otInventoryGetHandler), "")).Methods("GET")
+	cmmc.Handle("/ot/inventory", monkey(withFreshMFA(otInventoryPutHandler), "")).Methods("PUT")
 
 	// CMMC 3.1.15 / 3.5.3: privileged-action handlers require a fresh MFA
 	// assertion in the OIDC session (no-op on other AuthMethods). Read

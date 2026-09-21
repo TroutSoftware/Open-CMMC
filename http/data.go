@@ -151,7 +151,9 @@ func handle(fn handleFunc, prefix string, store *storage.Storage, server *settin
 
 		if status != 0 {
 			txt := http.StatusText(status)
-			if status == http.StatusBadRequest && err != nil {
+			// 400 and 422 carry the validation message: it is what the
+			// caller must fix, never internal state.
+			if (status == http.StatusBadRequest || status == http.StatusUnprocessableEntity) && err != nil {
 				txt += " (" + err.Error() + ")"
 			}
 			http.Error(w, strconv.Itoa(status)+" "+txt, status)

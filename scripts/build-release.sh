@@ -123,6 +123,22 @@ chmod +x "$STAGE/bin/cmmc-filebrowser"
 binsize=$(stat -c '%s' "$STAGE/bin/cmmc-filebrowser" 2>/dev/null || stat -f '%z' "$STAGE/bin/cmmc-filebrowser")
 echo "    binary: $STAGE/bin/cmmc-filebrowser ($binsize bytes)"
 
+# cmmc-smb — shop-floor SMB config renderer / account tool (smb/).
+# Same FIPS build flags; it does no crypto of its own beyond
+# crypto/rand for machine passwords, but one build recipe means one
+# thing to attest.
+say "Build cmmc-smb"
+(
+  cd "$REPO_DIR"
+  GOFIPS140=v1.0.0 CGO_ENABLED=0 go build \
+    -tags noboringcrypto \
+    -trimpath \
+    -ldflags "-s -w" \
+    -o "$STAGE/bin/cmmc-smb" \
+    ./smb/cmd/cmmc-smb
+)
+chmod +x "$STAGE/bin/cmmc-smb"
+
 # --- stage config / docs / frontend-dist ------------------------------
 
 say "Stage release tree"
@@ -141,6 +157,33 @@ cp "$REPO_DIR/config/keycloak/bootstrap_test.sh"              "$STAGE/config/key
 cp "$REPO_DIR/config/wazuh/podman-compose.wazuh.yml"          "$STAGE/config/wazuh/"
 cp "$REPO_DIR/config/wazuh/decoders/filebrowser-cmmc.xml"     "$STAGE/config/wazuh/decoders/"
 cp "$REPO_DIR/config/wazuh/rules/filebrowser-cmmc.xml"        "$STAGE/config/wazuh/rules/"
+
+# Shop-floor SMB delivery (optional; docs/smb-shop-floor.md).
+install -d "$STAGE/config/smb"
+cp "$REPO_DIR/config/smb/Containerfile"          "$STAGE/config/smb/"
+cp "$REPO_DIR/config/smb/cells.example.yaml"     "$STAGE/config/smb/"
+cp "$REPO_DIR/config/smb/install-smb.sh"         "$STAGE/config/smb/"
+cp "$REPO_DIR/config/smb/spike.sh"               "$STAGE/config/smb/"
+install -d "$STAGE/config/clamav"
+cp "$REPO_DIR/config/clamav/Containerfile"       "$STAGE/config/clamav/"
+cp "$REPO_DIR/config/clamav/clamd.conf"          "$STAGE/config/clamav/"
+cp "$REPO_DIR/config/clamav/freshclam.conf"      "$STAGE/config/clamav/"
+cp "$REPO_DIR/config/clamav/install-clamav-container.sh" "$STAGE/config/clamav/"
+
+# Container images, if the build host has podman: the installer loads
+# images/*.tar instead of pulling or building on the customer's host
+# (no registry, no subscription, air-gap friendly). Skipped silently
+# when podman is absent — the installer then builds from the
+# Containerfiles, which only needs Docker Hub.
+if command -v podman >/dev/null 2>&1; then
+  say "Container images (podman save)"
+  install -d "$STAGE/images"
+  # Tag :bundled — the name the installers expect after `podman load`.
+  podman build -q -t "localhost/cmmc-smb:bundled"   -f "$REPO_DIR/config/smb/Containerfile"    "$REPO_DIR/config/smb"    >/dev/null \
+    && podman save -q -o "$STAGE/images/cmmc-smb.tar"   "localhost/cmmc-smb:bundled"   && echo "    images/cmmc-smb.tar"
+  podman build -q -t "localhost/cmmc-clamd:bundled" -f "$REPO_DIR/config/clamav/Containerfile" "$REPO_DIR/config/clamav" >/dev/null \
+    && podman save -q -o "$STAGE/images/cmmc-clamd.tar" "localhost/cmmc-clamd:bundled" && echo "    images/cmmc-clamd.tar"
+fi
 
 # Docs — whole docs/ tree; these carry operator-facing guidance.
 cp -r "$REPO_DIR/docs/." "$STAGE/docs/"

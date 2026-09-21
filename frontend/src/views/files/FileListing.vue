@@ -53,6 +53,13 @@
             show="classify-cui"
           />
           <action
+            v-if="headerButtons.releaseOt"
+            id="release-ot-button"
+            icon="precision_manufacturing"
+            label="Send to shop floor"
+            show="release-ot"
+          />
+          <action
             v-if="headerButtons.permissions"
             id="permissions-button"
             icon="lock"
@@ -140,6 +147,12 @@
         icon="label"
         label="Classify CUI"
         show="classify-cui"
+      />
+      <action
+        v-if="headerButtons.releaseOt"
+        icon="precision_manufacturing"
+        label="Send to shop floor"
+        show="release-ot"
       />
       <action
         v-if="headerButtons.permissions"
@@ -537,6 +550,17 @@ const headerButtons = computed(() => {
     move: fileStore.selectedCount > 0 && authStore.user?.perm.rename,
     copy: fileStore.selectedCount > 0 && authStore.user?.perm.create,
     classifyCui: classifyVisible,
+    // Release to shop floor (cmmc/otrelease) — admin + single FILE
+    // selected. Non-admins with an ACL Release grant can still call
+    // the API; surfacing the button for them needs a per-path grant
+    // probe and is deferred. The prompt handles the "not enabled"
+    // (503) case itself.
+    releaseOt:
+      !!authStore.user?.perm.admin &&
+      !!req?.items &&
+      !!sel &&
+      sel.length === 1 &&
+      !req.items[sel[0]]?.isDir,
     // Permissions (folder ACL) — admin-only, directory target only.
     // Backend enforces admin + fresh MFA on PUT/DELETE.
     permissions: permissionsVisible,

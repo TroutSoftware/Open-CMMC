@@ -198,5 +198,13 @@ jobs:
               --from-release "$(realpath $TAR)"
             ```
 
+            Shop-floor SMB delivery (programs to CNC/OT machines) is optional:
+            add `--with-smb --ot-ip <address>` to the deploy command, then add
+            your machines in the web UI (Settings → Shop floor). Guide:
+            `docs/smb-shop-floor.md`. The Samba and ClamAV containers are built
+            on the host from the bundled Containerfiles (needs Docker Hub access
+            once); for an air-gapped host, run `scripts/build-release.sh` on a
+            machine with podman and ship the tarball with `images/`.
+
             See `docs/operator-2fa.md` for 2FA enrollment (TOTP + FIDO2) and
             `docs/compliance-posture.md` for per-control NIST 800-171 Rev 2 coverage.

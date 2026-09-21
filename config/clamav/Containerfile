@@ -1,0 +1,12 @@
+# cmmc-clamd — ClamAV daemon as a container, for hosts where the OS package
+# is unavailable (no subscription, air-gap, arm64). Used by
+# config/clamav/install-clamav-container.sh when nothing answers on
+# FB_CMMC_AV_ADDR. Configuration is bind-mounted (clamd.conf,
+# freshclam.conf next to this file) so nothing here needs editing.
+FROM docker.io/library/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends clamav-daemon clamav-freshclam ca-certificates && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /run/clamav /var/lib/clamav && chown -R clamav:clamav /run/clamav /var/lib/clamav
+EXPOSE 3310
+# Signatures: `freshclam` once into the volume (install script does it),
+# then clamd alone; freshclam runs from a systemd timer on the host.
+CMD ["clamd"]

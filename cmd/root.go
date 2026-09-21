@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,13 +29,14 @@ import (
 	cmmcoidc "github.com/filebrowser/filebrowser/v2/cmmc/auth/oidc"
 	cmmcsession "github.com/filebrowser/filebrowser/v2/cmmc/auth/session"
 	cmmcauthz "github.com/filebrowser/filebrowser/v2/cmmc/authz"
-	keyderive "github.com/filebrowser/filebrowser/v2/cmmc/crypto/keyderive"
 	cmmccabinet "github.com/filebrowser/filebrowser/v2/cmmc/cabinet"
 	envelope "github.com/filebrowser/filebrowser/v2/cmmc/crypto/envelope"
+	cmmcfips "github.com/filebrowser/filebrowser/v2/cmmc/crypto/fips"
+	keyderive "github.com/filebrowser/filebrowser/v2/cmmc/crypto/keyderive"
+	cmmctls "github.com/filebrowser/filebrowser/v2/cmmc/crypto/tlsprofile"
+	cmmcotrelease "github.com/filebrowser/filebrowser/v2/cmmc/otrelease"
 	cmmcscan "github.com/filebrowser/filebrowser/v2/cmmc/scan"
 	_ "github.com/filebrowser/filebrowser/v2/cmmc/scan/clamav" // registers scan backend
-	cmmcfips "github.com/filebrowser/filebrowser/v2/cmmc/crypto/fips"
-	cmmctls "github.com/filebrowser/filebrowser/v2/cmmc/crypto/tlsprofile"
 	"github.com/filebrowser/filebrowser/v2/diskcache"
 	"github.com/filebrowser/filebrowser/v2/frontend"
 	fbhttp "github.com/filebrowser/filebrowser/v2/http"
@@ -253,6 +256,24 @@ user created with the credentials from options "username" and "password".`,
 			log.Printf("scan: %s mode, no backend configured — uploads are NOT being scanned (NOT CMMC-compliant)", scanMode)
 		}
 
+		// Fail closed on the two paths that would otherwise leave
+		// ModeRequired silently unscanned. The mode's whole promise is
+		// that a sick or absent scanner cannot let a file through, so
+		// discovering that at boot is the only honest outcome.
+		//
+		// The second case is the subtle one: the scanner is attached to
+		// EncryptingFS, so with no KEK there is no filesystem to attach
+		// it to and required-mode AV would be a no-op with a reassuring
+		// log line. Refuse rather than mislead.
+		if scanMode == cmmcscan.ModeRequired {
+			if scanner == nil {
+				return fmt.Errorf("scan: FB_CMMC_AV=required but no scanner backend is available — set FB_CMMC_AV_ADDR and ensure clamd is reachable, or set FB_CMMC_AV=optional")
+			}
+			if kek == nil {
+				return fmt.Errorf("scan: FB_CMMC_AV=required needs envelope encryption enabled (the scanner runs inside the encrypting filesystem) — configure FB_CMMC_KEK_FILE, or set FB_CMMC_AV=optional")
+			}
+		}
+
 		if kek != nil {
 			users.UserFsBuilder = func(scope string) afero.Fs {
 				fs := envelope.NewWithMode(afero.NewOsFs(), kek, st.Storage.Envelopes, encMode)
@@ -273,6 +294,40 @@ user created with the credentials from options "username" and "password".`,
 			return err
 		}
 		server.Root = root
+
+		// CMMC 3.1.3 / 3.14.2 — shop-floor SMB delivery (cmmc/otrelease).
+		// Required mode refuses to boot unless the cells file loads AND
+		// AV is in required mode: the return path files machine-written
+		// content into the cabinet, and an unscanned intake is not a
+		// posture we ship. Background loops stop with the server.
+		otCtx, otCancel := context.WithCancel(context.Background())
+		defer otCancel()
+		if otCfg, err := cmmcotrelease.LoadConfigFromEnv(); err != nil {
+			return err
+		} else if otCfg.Mode == cmmcotrelease.ModeRequired {
+			if scanMode != cmmcscan.ModeRequired {
+				return fmt.Errorf("otrelease: FB_CMMC_SMB=required needs FB_CMMC_AV=required (intake scans before filing)")
+			}
+			cells, err := cmmcotrelease.LoadCells(otCfg.CellsPath)
+			if err != nil {
+				return err
+			}
+			releaser, err := cmmcotrelease.NewReleaser(otCfg.Root, cells)
+			if err != nil {
+				return err
+			}
+			intaker, err := cmmcotrelease.NewIntaker(cmmcotrelease.IntakeOptions{
+				Root: otCfg.Root, Cells: cells, Cabinet: users.UserFsBuilder(server.Root), ServerRoot: server.Root,
+				Meta: st.Storage.FileMetadata, Scanner: scanner, ScanMode: scanMode, Logf: log.Printf,
+			})
+			if err != nil {
+				return err
+			}
+			fbhttp.SetOTRelease(releaser, cmmcotrelease.NewManager(otCfg.CellsPath, cells, releaser, intaker))
+			go intaker.Run(otCtx, otCfg.PollInterval)
+			go releaser.RunExpiry(otCtx, otCfg.ExpiryInterval, log.Printf)
+			log.Printf("otrelease: shop-floor SMB delivery enabled — %d cell(s), root %s, poll %s", len(cells.Cells), otCfg.Root, otCfg.PollInterval)
+		}
 
 		adr := server.Address + ":" + server.Port
 
@@ -421,6 +476,17 @@ user created with the credentials from options "username" and "password".`,
 			// SSP evidence trail points at an enforceable control, not
 			// a build-time claim.
 			log.Printf("FIPS 140 posture: %s", cmmcfips.Mode())
+			// CMMC 3.5.3 step-up window for privileged writes (marking, ACL,
+			// shop-floor release, settings). Default 10 min; the installer
+			// writes 3600 because re-MFA on every click is hostile.
+			if v := strings.TrimSpace(os.Getenv("FB_OIDC_MFA_FRESH_SECONDS")); v != "" {
+				secs, err := strconv.Atoi(v)
+				if err != nil || secs < 60 || secs > 86400 {
+					return fmt.Errorf("FB_OIDC_MFA_FRESH_SECONDS must be an integer between 60 and 86400, got %q", v)
+				}
+				fbhttp.SetFreshMFAThreshold(time.Duration(secs) * time.Second)
+				log.Printf("MFA step-up window: %ds", secs)
+			}
 			if cfg.AllowInsecureHTTPIssuer {
 				log.Printf("WARNING: FB_OIDC_ALLOW_INSECURE_HTTP_ISSUER=true — http:// issuer/redirect accepted. CMMC L2 production must leave this false (3.13.8/3.13.15).")
 			}

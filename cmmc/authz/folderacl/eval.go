@@ -9,9 +9,10 @@ import "strings"
 type Action string
 
 const (
-	ActionRead  Action = "read"
-	ActionWrite Action = "write"
-	ActionShare Action = "share"
+	ActionRead    Action = "read"
+	ActionWrite   Action = "write"
+	ActionShare   Action = "share"
+	ActionRelease Action = "release"
 )
 
 // Decision is the evaluator's output. Matched carries the path of
@@ -148,6 +149,8 @@ func permForAction(p Perms, a Action) bool {
 		return p.Write
 	case ActionShare:
 		return p.Share
+	case ActionRelease:
+		return p.Release
 	}
 	return false
 }

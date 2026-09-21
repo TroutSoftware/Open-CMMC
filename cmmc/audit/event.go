@@ -151,6 +151,17 @@ const (
 	ActionFilePublicDL   = "file.public_download"
 	ActionFilePublicRead = "file.public_share_access"
 
+	// Shop-floor (OT) delivery over SMB — cmmc/otrelease. Release is the
+	// 3.1.3 flow-control decision (who sent which CUI to which cell);
+	// intake is the 3.14.2 gate outcome for files coming back.
+	ActionOTRelease       = "file.release.ot"
+	ActionOTReleaseRevoke = "file.release.revoke"
+	ActionOTIntake        = "file.intake.ot"
+	ActionOTIntakeReject  = "file.intake.reject"
+	ActionOTCellsRead     = "ot.cells.read"
+	ActionOTReleasedRead  = "ot.released.read"
+	ActionOTInventorySet  = "ot.inventory.set"
+
 	ActionAdminUsageRead    = "admin.usage.read"
 	ActionAdminCommandsRead = "admin.commands.read"
 

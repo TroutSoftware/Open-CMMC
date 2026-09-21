@@ -33,6 +33,11 @@
               Groups &amp; Permissions
             </li></router-link
           >
+          <router-link to="/settings/shopfloor" v-if="user?.perm.admin"
+            ><li :class="{ active: $route.path === '/settings/shopfloor' }">
+              Shop floor
+            </li></router-link
+          >
         </ul>
       </div>
     </div>

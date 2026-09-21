@@ -30,6 +30,7 @@ import DiscardEditorChanges from "./DiscardEditorChanges.vue";
 import ResolveConflict from "./ResolveConflict.vue";
 import CurrentPassword from "./CurrentPassword.vue";
 import ClassifyCUI from "./ClassifyCUI.vue";
+import ReleaseOT from "./ReleaseOT.vue";
 import Permissions from "./Permissions.vue";
 
 const layoutStore = useLayoutStore();
@@ -55,6 +56,7 @@ const components = new Map<string, any>([
   ["resolve-conflict", ResolveConflict],
   ["current-password", CurrentPassword],
   ["classify-cui", ClassifyCUI],
+  ["release-ot", ReleaseOT],
   ["permissions", Permissions],
 ]);
 

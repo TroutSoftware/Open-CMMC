@@ -1,0 +1,48 @@
+# cmmc-smb — shop-floor Samba container for Open-CMMC
+#
+# WHY A DEBIAN USERSPACE ON A FIPS HOST
+#   CNC controllers authenticate with a username/password over NTLMv2
+#   (docs/cmmc/smb-connectivity-scope.md § 1). NTLMv2 needs MD4 for the
+#   NT hash. RHEL 9 in FIPS mode builds GnuTLS/OpenSSL to refuse MD4, so
+#   the host's own Samba cannot authenticate any password client (Red Hat
+#   KB solutions/7074692). The kernel's fips=1 flag governs kernel crypto
+#   and FIPS-built userspace libraries; it does not reach into a
+#   container whose GnuTLS was not built in FIPS mode. This image is
+#   therefore, deliberately and visibly, a NON-FIPS service (scope § 2,
+#   § 6 — the SSP lists it as a non-validated crypto module).
+#
+#   config/smb/spike.sh is what proves the claim on a real fips=1 host
+#   before Phase 1 starts. Alternative lever if the Debian base is not
+#   acceptable: build from a UBI base and set GNUTLS_FORCE_FIPS_MODE=0 in
+#   the unit environment (untested; the spike can try both).
+#
+# Runtime contract (rendered by `cmmc-smb render`, mounted by the
+# quadlet — see smb/render):
+#   /etc/samba/smb.conf   rendered config          (ro)
+#   /etc/passwd, /etc/group   machine accounts     (ro)
+#   /export/out/<cell>    released programs        (ro)
+#   /export/return/<cell>/<machine>  drop folders  (rw)
+#   /var/lib/samba        tdbsam + state (named volume, persists passwords)
+#   /dev/log              host journald (full_audit → local5)
+# Rootfs is read-only; all capabilities dropped except what smbd needs.
+
+ARG BASE=docker.io/library/debian:bookworm-slim
+FROM ${BASE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends samba samba-vfs-modules \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* \
+ # Nothing in the image should ever be consulted for config or accounts;
+ # everything is bind-mounted. Remove the defaults so a missing mount
+ # fails loudly instead of serving a stock [homes]/[printers] layout.
+ && rm -f /etc/samba/smb.conf \
+ && mkdir -p /export/out /export/return /var/lib/samba/private /run/samba /var/cache/samba /var/log/samba
+
+EXPOSE 445
+
+# --foreground / --no-process-group: run as PID 1 under podman.
+# --debug-stdout: smbd's own log to the container log; audit records go
+# to syslog (host /dev/log) per smb.conf, not here.
+ENTRYPOINT ["/usr/sbin/smbd", "--foreground", "--no-process-group", "--debug-stdout", "--configfile=/etc/samba/smb.conf"]
