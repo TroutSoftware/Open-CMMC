@@ -1,4 +1,4 @@
-# Open-CMMC — v1 Architecture
+# Open-CMMC — Architecture
 
 **Purpose:** hardened fork of filebrowser for on-prem CUI file storage at CMMC L2.
 **Target date:** C3PAO-ready by 2026-Q3; CMMC Phase 2 mandatory 2026-11-10.
@@ -61,7 +61,7 @@ flowchart LR
     FILES --- TPM
 ```
 
-> **Not shown** — no outbound SMTP / email / share-portal surface. External CUI sharing is out of MVP scope (see § 10). Customers route outbound CUI through their existing specialized provider.
+> **Not shown** — no outbound SMTP / email / share-portal surface. External CUI sharing is out of MVP scope (see § 10). Customers route outbound CUI through their existing specialized provider. The optional shop-floor SMB path (CNC / OT controllers, v2.0) has its own diagram and scoping in § 13.
 
 ---
 
@@ -401,3 +401,130 @@ Even in Profile B, the filebrowser application retains responsibility for contro
 - **Malicious code protection** (3.14.2) and **scan files from external sources** (3.14.5) — ClamAV + YARA at upload time.
 
 Additional Open-CMMC-side work (envelope encryption, audit schema, CUI marking, AEAD AAD binding, admin listener separation, config signing) is tracked in the engineering plan outside this public document.
+
+---
+
+## 13. Shop-floor SMB delivery (optional, v2.0)
+
+Most CNC and OT controllers read network shares and nothing else. With
+`install.sh deploy --with-smb`, the same host serves those machines a
+share **without exporting the cabinet**: files are *released* into a
+per-cell read-only share and *taken back* through a per-machine write
+share. Operator guide: [smb-shop-floor.md](./smb-shop-floor.md);
+per-control rows: [compliance-posture.md § Optional: shop-floor SMB
+delivery](./compliance-posture.md#optional-shop-floor-smb-delivery).
+
+### Data flow and boundary
+
+```mermaid
+flowchart LR
+    subgraph ENCLAVE[CUI Enclave host — RHEL 9 FIPS]
+        direction TB
+        FB[(cmmc-filebrowser<br/>release + intake<br/>cmmc/otrelease)]
+        FILES[(CUI cabinet<br/>LUKS + per-file DEK<br/>never exported)]
+        OUT[(ot/out/&lt;cell&gt;/<br/>released programs<br/>+ manifest, TTL)]
+        RET[(ot/return/&lt;cell&gt;/&lt;machine&gt;/<br/>drop folders)]
+        Q[(ot/quarantine/<br/>private — never shared)]
+        AV[ClamAV<br/>cmmc-clamd, loopback :3310]
+        SMB[cmmc-smb<br/>Samba in podman<br/>read-only rootfs, OT NIC only]
+        FWD[firewalld zone ot<br/>DROP; 445 from listed<br/>addresses only]
+        SPOOL[(HMAC audit chain<br/>+ Samba full_audit)]
+    end
+
+    subgraph CELL[Cell — Protected Distribution System]
+        CNC1[Controller<br/>Haas / Mazak / Fanuc]
+        CNC2[Controller]
+    end
+
+    FB -- decrypt + atomic write --> OUT
+    RET -- stable? snapshot --> Q
+    Q -- gate + scan --> AV
+    Q -- mark + encrypt, never overwrite --> FILES
+    FB -- read --> FILES
+    OUT --- SMB
+    RET --- SMB
+    SMB --- FWD
+    FWD -- SMB2/3, 445 --> CNC1
+    FWD -- SMB2/3, 445 --> CNC2
+    FB -- file.release.ot / .revoke<br/>file.intake.ot / .reject --> SPOOL
+    SMB -- client IP, machine, share --> SPOOL
+```
+
+The assessment boundary does not move. The Samba container, the two
+exported directories and the firewall zone are part of the assessed
+appliance. The controllers are outside it, on a physical path the
+operator attests per cell.
+
+| Path | What crosses | Control point |
+|---|---|---|
+| Cabinet → out share | One file at a time, by an explicit, audited action (admin or *Release* grant, fresh MFA); ITAR-marked files only to ITAR cells; expires after the cell TTL or on take-back | 3.1.3 flow control, `file.release.ot` |
+| Machine → return share | Anything the machine writes. Picked up once stable, snapshot-copied to a private quarantine, content-gated (extension allow-list, size, daily quota, no executable/archive magic, text only), ClamAV fail-closed, marked with the cell's designation, filed encrypted under `return_path`, never overwriting | 3.14.2 / 3.14.5, 3.8.4, `file.intake.ot` / `file.intake.reject` |
+| Host ↔ controller wire | SMB2/3 on 445 only, from the inventoried source addresses only, on the OT interface only. Password machines: NTLMv2 + signing, SMB3 encryption required. No-password machines (default): plaintext, allowed only in a `pds_attested` cell | 3.13.8 via physical safeguards, 3.1.14 / 3.13.1 / 3.13.6 |
+
+### Components added
+
+| Component | Role | In CUI scope? |
+|---|---|---|
+| **cmmc/otrelease** (in the enclave binary) | Release, intake gate, quarantine, expiry, inventory manager; reads the same `cells.yaml` the renderer does | Yes — primary |
+| **cmmc-smb** (podman, Debian bookworm Samba) | Serves `out/` and `return/` on the OT-side address; NTLMv2 only, SMB2 floor, `hosts allow` per machine, `full_audit` to the host journal. Deliberately a **non-validated userspace**: NTLMv2 needs MD4, which the FIPS-mode host's OpenSSL refuses. The host's own FIPS posture is unchanged | Yes — listed as a non-FIPS module (3.13.11) |
+| **cmmc-smb-legacy** (optional) | Second Samba instance, SMB1 only, own OT address; exists only when a cell has `dialect: smb1` machines | Yes — subject of the enduring exception |
+| **cmmc-clamd** (podman, bundled) | ClamAV on loopback with a daily signature timer, started by the installer when no scanner answers; the feature refuses to run without AV in required mode | Yes |
+| **firewalld `ot` zone** | Target DROP; one rich rule per machine address for 445. Single-NIC alias mode keys on the OT destination address instead — deny-by-default holds, physical separation does not, and the SSP must say so | Yes (boundary) |
+| **cmmc-smb** CLI + `cmmc-smb-apply.path` | Renders smb.conf, passwd/group, firewall rules, quadlets and SSP rows from `cells.yaml`; the path unit re-renders on every change made from Settings → Shop floor | Yes |
+| **Controllers** | CNC / OT machines in a cell | **Specialized Assets** — inventoried and documented, not scored (see below) |
+
+### Ingress added (OT side)
+
+| Src | Dst | Port | Proto | Notes |
+|---|---|---|---|---|
+| Inventoried machine addresses only | OT-side address (dedicated NIC, VLAN sub-interface, or alias) | 445 | SMB2/3 (SMB1 on the legacy address only) | Everything else on the OT interface dropped; no forwarding between OT and LAN (`ip_forward=0`) |
+
+### CMMC scoping — how the SSP treats it
+
+1. **Controllers are Specialized Assets — Operational Technology**
+   (32 CFR 170.19(c)(1); L2 Scoping Guide). They are listed in the asset
+   inventory, described in the SSP with the risk-based practices that
+   manage them, and shown on the network diagram; the assessor reviews
+   that documentation and does not score them control by control.
+   `cmmc-smb ssp-table` prints the inventory rows from `cells.yaml`, so
+   inventory and configuration cannot drift. Do not write a per-control
+   exception table for the controllers — they are not scored, and such a
+   table invites treating them as CUI assets.
+2. **The physical path is the 3.13.8 basis for plaintext hops.** 3.13.8
+   permits unencrypted CUI in transit only when "otherwise protected by
+   alternative physical safeguards" — a Protected Distribution System,
+   not a VLAN or a firewall rule. A cell with no-password machines, SMB2
+   or SMB1 must be `pds_attested`; the loader refuses the configuration
+   otherwise. Evidence per cell: photos and a labelled diagram of the
+   cabling (conduit or locked cabinets, dedicated cell switch, no
+   wireless, controlled cabinet access). A cell whose machines all use a
+   password over SMB3 needs no PDS; encryption on the share is then the
+   control and the PDS, if present, is defense in depth.
+3. **The Samba container is a non-validated cryptographic module.** It is
+   listed as such (3.13.11) with the statement of what confidentiality on
+   the hop relies on: the PDS where one is attested, SMB3 encryption as
+   defense in depth. TLS, JWT, envelope encryption, LUKS and the FIPS
+   kernel are unaffected.
+4. **Enduring exception only for SMB1** (32 CFR 170.4). Its subject is the
+   legacy controllers — the special circumstance where full compliance is
+   not feasible — and its stated effect on the appliance is the dedicated
+   SMB1 listener, isolated to those addresses over a PDS, which stays a
+   fully assessed CUI asset. No POA&M is required for it. It is the one
+   exception in the design; `cmmc-smb ssp-table` prints the statement
+   only when an SMB1 cell exists.
+5. **Anything else that can reach the share** — an HMI, an engineering
+   PC, a vendor laptop on the cell switch — is not a Specialized Asset. It
+   is a CUI asset and must be in scope like any workstation, or kept off
+   the cell segment. The firewall only admits the inventoried addresses,
+   but address spoofing on a shared segment is exactly what the PDS
+   requirement exists to exclude.
+6. **Single-NIC alias mode** (no second NIC, no VLAN) keeps deny-by-default
+   but not physical separation of the OT address from the LAN. The SSP
+   states that this mode is in use; move to a NIC or VLAN when possible.
+
+Evidence the assessor will ask for: the `ssp-table` output (asset
+inventory, crypto-module row, enduring-exception row if any), the PDS
+photos and diagram per attested cell, the audit events (`file.release.ot`,
+`file.release.revoke`, `file.intake.ot`, `file.intake.reject`) and the
+Samba `full_audit` records in the host journal, `/etc/cmmc-smb/` under
+Wazuh file-integrity monitoring, and the firewalld `ot` zone listing.

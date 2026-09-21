@@ -170,6 +170,21 @@ relaxation to validate on the bench before enabling.
 
 ## What the SSP says
 
+The scoping in one paragraph: the controllers are **Specialized Assets
+(OT)** — inventoried, described and drawn, not scored control by control.
+The Samba container, the two shared directories and the OT firewall zone
+are part of the assessed appliance. Plaintext hops (no-password machines,
+SMB2, SMB1) are permitted by 3.13.8's "alternative physical safeguards"
+clause, which is why those cells must attest a Protected Distribution
+System. The Samba userspace is listed as a non-validated module (3.13.11)
+with the PDS as the relied-upon control. SMB1, if you have it, is the one
+enduring exception (32 CFR 170.4), written with the controllers as its
+subject. The full reasoning, the boundary diagram and what counts as a
+CUI asset on the cell segment are in
+[architecture.md § 13](./architecture.md#13-shop-floor-smb-delivery-optional-v20);
+the per-control rows are in
+[compliance-posture.md](./compliance-posture.md#optional-shop-floor-smb-delivery).
+
 `cmmc-smb ssp-table` prints three things to paste in:
 
 - the **asset inventory rows** for every controller (specialized

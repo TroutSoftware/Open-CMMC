@@ -121,6 +121,7 @@ Open-CMMC is the **product + evidence base** for a System Security Plan. It does
 | Backup, restore, recovery drill | [`docs/backup-restore.md`](./docs/backup-restore.md) |
 | Day-2 operations (upgrade, user lifecycle) | [`docs/day2-operations.md`](./docs/day2-operations.md) |
 | Keycloak realm (policy + PKCE + amr) | [`docs/keycloak-setup.md`](./docs/keycloak-setup.md) |
+| Shop-floor SMB (OT boundary, scoping, PDS evidence) | [`docs/architecture.md` § 13](./docs/architecture.md#13-shop-floor-smb-delivery-optional-v20), [`docs/smb-shop-floor.md`](./docs/smb-shop-floor.md); `cmmc-smb ssp-table` prints the asset-inventory, crypto-module and enduring-exception rows |
 
 Typical SSP workflow: the customer's compliance team copies per-control statements from `gap-analysis.md`, documents ODPs (organizationally-defined parameters), adds site-specific evidence (retention, ticketing), and produces the SSP + POA&M for C3PAO review.
 
