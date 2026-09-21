@@ -1,0 +1,90 @@
+# cmmc-share SELinux policy module (type enforcement)
+#
+# Build and install (RHEL 9 / AlmaLinux 9 / Rocky 9, targeted policy):
+#
+#   checkmodule -M -m -o cmmc-share.mod cmmc-share.selinux
+#   semodule_package -o cmmc-share.pp -m cmmc-share.mod
+#   sudo semodule -i cmmc-share.pp
+#   sudo semanage fcontext -a -t cmmc_share_exec_t  /usr/local/bin/cmmc-share
+#   sudo semanage fcontext -a -t cmmc_share_etc_t   '/etc/cmmc-share(/.*)?'
+#   sudo semanage fcontext -a -t cmmc_share_var_t   '/var/lib/cmmc-share(/.*)?'
+#   sudo restorecon -RFv /usr/local/bin/cmmc-share /etc/cmmc-share /var/lib/cmmc-share
+#
+# Rationale: the daemon runs in its own domain (cmmc_share_t) so a
+# compromise of the process cannot touch anything outside the
+# whitelisted contexts. The public listener on tcp:8444 and the
+# backchannel listener on tcp:8445 are the only network surfaces.
+
+policy_module(cmmc_share, 1.0.0)
+
+########################################
+#
+# Types
+#
+
+type cmmc_share_t;           # process domain
+type cmmc_share_exec_t;      # /usr/local/bin/cmmc-share
+type cmmc_share_etc_t;       # /etc/cmmc-share/
+type cmmc_share_var_t;       # /var/lib/cmmc-share/store/
+
+# The binary transitions from init_t (systemd) to cmmc_share_t.
+init_daemon_domain(cmmc_share_t, cmmc_share_exec_t)
+
+########################################
+#
+# Files
+#
+
+# Config is read-only.
+allow cmmc_share_t cmmc_share_etc_t:dir  { getattr search open read };
+allow cmmc_share_t cmmc_share_etc_t:file { getattr open read };
+
+# Store is read + write + create + unlink (share lifecycle).
+allow cmmc_share_t cmmc_share_var_t:dir  { getattr search open read write add_name remove_name };
+allow cmmc_share_t cmmc_share_var_t:file { getattr open read write create unlink rename setattr };
+
+########################################
+#
+# Network — public listener (internet) + backchannel (enclave VPN)
+#
+
+# Define labeled TCP ports so the daemon can bind without needing
+# the broad "bind to any unreserved port" permission.
+type cmmc_share_public_port_t;
+type cmmc_share_backchannel_port_t;
+
+corenet_port(cmmc_share_public_port_t)
+corenet_port(cmmc_share_backchannel_port_t)
+
+# Bind rights.
+corenet_tcp_bind_generic_node(cmmc_share_t)
+allow cmmc_share_t cmmc_share_public_port_t:tcp_socket name_bind;
+allow cmmc_share_t cmmc_share_backchannel_port_t:tcp_socket name_bind;
+
+# Accept inbound connections.
+allow cmmc_share_t self:tcp_socket { create bind listen accept read write getopt setopt getattr shutdown };
+
+# Egress: NONE. The daemon must not dial out. If a compromise wants
+# to reach outbound, SELinux denies.
+
+########################################
+#
+# Runtime
+#
+
+# journald.
+logging_send_syslog_msg(cmmc_share_t)
+
+# Clock read (TTL computation) but NOT set.
+kernel_read_system_state(cmmc_share_t)
+kernel_dontaudit_read_system_state(cmmc_share_t)
+
+# /dev/urandom for key material.
+dev_read_urand(cmmc_share_t)
+
+# Allow the daemon to read its own /proc/self (for getpid etc.).
+files_search_proc(cmmc_share_t)
+
+# Deny everything else by default — including attempts to read
+# home directories, other app state, kernel modules, etc. The
+# lack of an allow rule IS the policy.

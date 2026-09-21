@@ -1,0 +1,121 @@
+# cmmc-share.service
+#
+# DMZ-facing share daemon for Open-CMMC. The only component of the
+# stack that accepts unauthenticated inbound traffic from the
+# internet, and the narrowest-possible process footprint for that
+# role: own user, own state directory, own SELinux context, no
+# network writes back into the enclave.
+#
+# Placement:
+#   /etc/systemd/system/cmmc-share.service      (this file)
+#   /usr/local/bin/cmmc-share                    (the binary)
+#   /etc/cmmc-share/                             (secrets, 0700 root:cmmc-share)
+#   /var/lib/cmmc-share/store/                   (shares, 0700 cmmc-share:cmmc-share)
+#
+# Install sketch:
+#   useradd --system --home-dir /var/lib/cmmc-share --shell /sbin/nologin cmmc-share
+#   install -d -m 0700 -o cmmc-share -g cmmc-share /var/lib/cmmc-share/store
+#   install -d -m 0750 -o root       -g cmmc-share /etc/cmmc-share
+#   openssl rand -out /etc/cmmc-share/pepper.bin 32
+#   openssl rand -out /etc/cmmc-share/audit.key   32
+#   openssl rand -out /etc/cmmc-share/bearer.token 32
+#   chmod 0400 /etc/cmmc-share/{pepper.bin,audit.key,bearer.token}
+#   chown cmmc-share:cmmc-share /etc/cmmc-share/{pepper.bin,audit.key,bearer.token}
+#   # TLS cert + key + enclave-ca likewise at 0400 cmmc-share.
+#
+#   systemctl daemon-reload
+#   systemctl enable --now cmmc-share
+
+[Unit]
+Description=Open-CMMC share daemon (DMZ-facing, passphrase-gated CUI shares)
+Documentation=https://github.com/TroutSoftware/Open-CMMC/blob/main/share/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cmmc-share
+Group=cmmc-share
+
+# --- Runtime ---------------------------------------------------------
+ExecStart=/usr/local/bin/cmmc-share \
+    --store-dir          /var/lib/cmmc-share/store \
+    --public-addr        0.0.0.0:8444 \
+    --backchannel-addr   127.0.0.1:8445 \
+    --tls-cert           /etc/cmmc-share/tls/server.crt \
+    --tls-key            /etc/cmmc-share/tls/server.key \
+    --enclave-ca         /etc/cmmc-share/tls/enclave-ca.pem \
+    --bearer-token-file  /etc/cmmc-share/bearer.token \
+    --audit-key-file     /etc/cmmc-share/audit.key \
+    --pepper-file        /etc/cmmc-share/pepper.bin
+
+Restart=on-failure
+RestartSec=5s
+# Let Go's signal handler drain in-flight downloads cleanly.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+# --- systemd sandbox -------------------------------------------------
+# The daemon is paranoia-maxed: it only needs to (a) listen on two
+# TCP sockets, (b) read its config dir, (c) read/write its store dir.
+# Every other knob below is "nope".
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+
+# Filesystem namespace.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+
+# Only these two paths are writable.
+ReadWritePaths=/var/lib/cmmc-share/store
+ReadOnlyPaths=/etc/cmmc-share
+
+# Network: AF_INET / AF_INET6 only (no AF_UNIX back-channel, no
+# AF_NETLINK, no raw sockets). Binding requires these two.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# System calls: a very tight allow-list. The @system-service set
+# covers the nominal HTTP-server path; @mount / @swap / @reboot /
+# @raw-io / @cpu-emulation are dropped.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @reboot @raw-io @cpu-emulation @debug @module @obsolete @privileged @resources
+
+# Resource caps: a single daemon handling handfuls of downloads
+# per minute has no legitimate need for more.
+LimitNOFILE=4096
+LimitNPROC=64
+TasksMax=64
+
+# --- Environment -----------------------------------------------------
+# FIPS mode comes from the host; this line just echoes intent.
+# The Go runtime's FIPS 140-3 module respects GOFIPS140 / GODEBUG.
+Environment=GOFIPS140=v1.0.0
+Environment=GODEBUG=fips140=on
+
+# --- Exit status -----------------------------------------------------
+# A config error (bad permissions, missing secret file) exits 2 from
+# main.go. Restart=on-failure retries only on non-zero exit; a
+# successful graceful shutdown returns 0 and stays stopped.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

@@ -76,10 +76,6 @@ Full architecture: [`docs/architecture.md`](./docs/architecture.md) — topology
 
 Full per-control coverage: [`docs/compliance-posture.md`](./docs/compliance-posture.md) (positive posture, installed) or [`docs/gap-analysis.md`](./docs/gap-analysis.md) (pre-fork baseline). Family-level summary below.
 
-![Classify folder dialog — dropdown with CUI//BASIC, CUI//SPECIFIED, CUI//SP-PROPIN, CUI//SP-PRVCY, CUI//SP-ITAR marks, annotated as admin-gated with fresh MFA required](./img/testdata/folder_classification.png)
-
-*CUI marking UI (NIST 3.8.4) — admin + fresh MFA required; every change emits an audit event.*
-
 **Legend:** ✅ Open-CMMC directly · 🟢 Wazuh extends · 📋 Customer SSP · 🏢 Host / facility
 
 | Family | Coverage | Scope | Where Open-CMMC addresses it |
@@ -102,7 +98,7 @@ Full per-control coverage: [`docs/compliance-posture.md`](./docs/compliance-post
 
 ---
 
-## SSP base
+## SSP documents
 
 Open-CMMC is the **product + evidence base** for a System Security Plan. It doesn't replace the customer's SSP, but it supplies every artifact an assessor needs:
 
@@ -232,9 +228,9 @@ The remaining ~35 controls are personnel / physical / policy — customer SSP do
 
 ## Project status
 
-**Prototype** targeting C3PAO assessment readiness **2026 Q3**. Phase 2 hard deadline: **2026-11-10**. Work plan + decision log (D1–D13) in [`docs/architecture.md`](./docs/architecture.md) §11.
-
-Trout Software is the primary maintainer. Community contributions welcome via PR. For commercial support / customer deployments, contact <hello@trout.software>.
+[Trout Software](https://www.trout.software) is the primary maintainer. Community contributions welcome via PR.
+Formal reviews and questions by RPO/C3PAO welcome via tickets, or contact <hello@trout.software>.
+For commercial support / customer deployments, contact <hello@trout.software>.
 
 ---
 
@@ -250,26 +246,3 @@ Open-CMMC started from [filebrowser/filebrowser](https://github.com/filebrowser/
 - `scripts/build-release.sh` — air-gap-friendly release packager
 
 Upstream filebrowser functionality is preserved where it doesn't conflict with CMMC requirements; removed / hardened where it did (e.g., the default no-auth mode refuses to boot; public shares are rejected for CUI-marked items). Bug reports for upstream-derived code belong upstream first; Open-CMMC-specific bugs + features in [this repo's issues](https://github.com/TroutSoftware/Open-CMMC/issues).
-
----
-
-## Appendix A: Gap analysis (pre-fork baseline)
-
-**This appendix describes filebrowser v2.63.2 as it existed at commit `dd53644` (2026-04-17) — BEFORE Open-CMMC forked it.** The gaps below are what motivated the fork: vanilla filebrowser is a capable file-sharing server but it ships without the controls a CMMC L2 assessment needs. Open-CMMC addresses every blocker in the table; this baseline is preserved as the evidence trail an assessor walks when asking "why is this product different from the one on GitHub's homepage?"
-
-The full per-control baseline with `file:line` citations is at [`docs/gap-analysis.md`](./docs/gap-analysis.md) — 110 controls across 14 families with severity (Blocker / Major / Minor / N/A-Infra / N/A-Policy / Inherited-AG) and remediation theme (replace-auth, add-module, config, host-control, siem, doc-only, inherit-idp, inherit-ag).
-
-**Top 10 ship-blockers the baseline carried, and how Open-CMMC addresses each:**
-
-| # | Baseline blocker (filebrowser v2.63.2) | Controls | Open-CMMC status |
-|---|---|---|---|
-| 1 | No FIPS-validated cryptography | 3.13.11, 3.13.8, 3.5.10, 3.13.16 | ✓ Built with `GOFIPS140=v1.0.0` on RHEL go-toolset (CMVP #4774) |
-| 2 | No MFA / OIDC / SAML (only JSON + hook auth) | 3.5.3, 3.5.4, 3.5.1 | ✓ OIDC backend (Keycloak/Entra/Okta) + step-up MFA + passkey peer |
-| 3 | No lockout / session revocation / idle lock | 3.1.8, 3.5.4, 3.1.10, 3.1.11 | ✓ Failed-attempt lockout, session-idle lock, JTI tracking |
-| 4 | No encryption at rest | 3.13.16, 3.8.9, 3.8.1 | ✓ Per-file envelope (AES-256-GCM, HKDF subkey), LUKS host layer |
-| 5 | Audit trail insufficient (stdlib `log` + rotation only) | 3.3.1–3.3.9 | ✓ Structured JSON events, HMAC chain, rsyslog-ossl / Wazuh |
-| 6 | TLS not FIPS-profiled (Go default cipher list) | 3.13.8, 3.13.11, 3.13.15 | ✓ Explicit FIPS cipher list, TLS 1.3 preferred, security headers |
-| 7 | No malware scan on upload | 3.14.2, 3.14.5, 3.14.6 | ✓ ClamAV integration fail-closed, internal signature mirror |
-| 8 | No CUI marking model (plain file paths) | 3.8.4, 3.1.3, 3.1.22 | ✓ Per-folder + per-file CUI marks, UI banners, declassify audit |
-| 9 | Public shares bypass auth for any file | 3.1.3, 3.1.22, 3.13.5 | ✓ Public share refused for CUI-marked items (out-of-scope for MVP) |
-| 10 | No SBOM / reproducible builds | 3.14.1, 3.11.2, 3.14.3 | ⚠ `-trimpath` + `-ldflags` in release builds; SBOM via CI (WIP) |

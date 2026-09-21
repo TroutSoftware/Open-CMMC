@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shared CUI file — Open-CMMC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 640px; margin: 4rem auto; padding: 1.5rem; color: #222; line-height: 1.5; }
+  h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+  .mark { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px; font-weight: 600; font-size: 0.85rem; background: #fdecc8; color: #8a4400; border: 1px solid #e5c089; }
+  .mark.itar { background: #ffd1d1; color: #8a0000; border-color: #e58989; }
+  .notice { background: #fff8e1; border: 1px solid #f0d673; padding: 1rem; border-radius: 4px; margin: 1rem 0; font-size: 0.9rem; }
+  form { margin-top: 1.5rem; }
+  button { background: #2563eb; color: white; border: 0; padding: 0.65rem 1.25rem; border-radius: 4px; font-size: 0.95rem; cursor: pointer; }
+  .meta { font-size: 0.85rem; color: #555; margin-top: 0.75rem; }
+  .meta span { display: block; }
+</style>
+</head>
+<body>
+<h1>A file has been shared with you</h1>
+
+<p>
+  File: <code>{{.Filename}}</code>
+  {{with .CUIMark}}<span class="mark{{if eq . "CUI//SP-ITAR"}} itar{{end}}">{{.}}</span>{{end}}
+</p>
+
+<div class="meta">
+  <span>Shared by: {{.SenderUserID}}</span>
+  <span>Expires: {{.ExpiresAt}}</span>
+  <span>Downloads remaining: {{.DownloadsLeft}}</span>
+</div>
+
+<div class="notice">
+  <strong>Notice — Controlled Unclassified Information.</strong>
+  This file contains CUI and is subject to NIST SP 800-171 handling
+  requirements. By continuing, you acknowledge that you are an
+  authorized recipient, that you will handle this file in accordance
+  with your organization's CUI program, and that misuse may carry
+  civil or criminal penalties under 18 U.S.C. § 1030 and related
+  statutes. Every access is logged.
+</div>
+
+<form method="post" action="/s/{{.ID}}/acknowledge">
+  <button type="submit">I acknowledge — continue</button>
+</form>
+</body>
+</html>
